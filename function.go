@@ -2,9 +2,9 @@ package telegrambot
 
 
 import (
-  "encoding/json"
-  "fmt"
-  "html"
+  // "encoding/json"
+  // "fmt"
+  // "html"
   "net/http"
 
   "github.com/GoogleCloudPlatform/functions-framework-go/functions"

@@ -87,6 +87,7 @@ func TelegramHook(w http.ResponseWriter, r *http.Request) {
 	if cfg.webhookSecret != "" {
 		got := r.Header.Get(webhookSecretHeader)
 		if subtle.ConstantTimeCompare([]byte(got), []byte(cfg.webhookSecret)) != 1 {
+			log.Printf("telegrambot: rejecting update: webhook secret header is missing or does not match TELEGRAM_WEBHOOK_SECRET")
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -124,6 +125,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	if text == "" {
 		return nil
 	}
+	log.Printf("telegrambot: update %d received from chat %d (%s)", incoming.UpdateID, msg.Chat.ID, msg.Chat.Type)
 	if cfg.allowedChatIDs != nil && !cfg.allowedChatIDs[msg.Chat.ID] {
 		log.Printf("telegrambot: ignoring update %d from chat %d, which is not in ALLOWED_CHAT_IDS", incoming.UpdateID, msg.Chat.ID)
 		return nil
@@ -133,6 +135,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	if msg.Chat.Type != "private" {
 		addressed := false
 		if text, addressed = groupText(ctx, telegram, msg, text); !addressed {
+			log.Printf("telegrambot: update %d: no mention of the bot, ignoring", incoming.UpdateID)
 			return nil
 		}
 		if text == "" {

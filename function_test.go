@@ -21,10 +21,14 @@ type fakeUpstream struct {
 	mu           sync.Mutex
 	paths        []string
 	deepSeekReqs []map[string]any
+	searchReqs   []map[string]any
 	sent         []sentMessage
 	reply        string
+	responses    []map[string]any // scripted model turns, consumed before reply
 	deepSeekCode int
 	rejectHTML   bool
+	searchText   string
+	searchCode   int
 }
 
 type sentMessage struct {
@@ -62,14 +66,16 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, map[string]any{"error": map[string]any{"message": "model exploded", "type": "server_error"}})
 			return
 		}
-		writeJSON(w, map[string]any{
-			"model": "deepseek-flash",
-			"choices": []any{map[string]any{
-				"finish_reason": "stop",
-				"message":       map[string]any{"content": f.reply},
-			}},
-			"usage": map[string]any{"prompt_tokens": 11, "completion_tokens": 7},
-		})
+		writeJSON(w, f.nextCompletion())
+
+	case r.URL.Path == geminiSearchPath:
+		f.searchReqs = append(f.searchReqs, body)
+		if f.searchCode != 0 {
+			w.WriteHeader(f.searchCode)
+			writeJSON(w, map[string]any{"error": map[string]any{"message": "grounding unavailable", "status": "UNAVAILABLE"}})
+			return
+		}
+		writeJSON(w, groundedResponse(f.searchText, "https://example.com/news", "example.com"))
 
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"username": "testbot", "is_bot": true}})
@@ -98,6 +104,76 @@ func (f *fakeUpstream) deepSeekRequests() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.deepSeekReqs...)
+}
+
+func (f *fakeUpstream) searchRequests() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.searchReqs...)
+}
+
+// nextCompletion returns the next scripted model turn, or a plain answer.
+func (f *fakeUpstream) nextCompletion() map[string]any {
+	if len(f.responses) > 0 {
+		next := f.responses[0]
+		f.responses = f.responses[1:]
+		return next
+	}
+	return textCompletion(f.reply)
+}
+
+// textCompletion mirrors a plain DeepSeek answer.
+func textCompletion(answer string) map[string]any {
+	return map[string]any{
+		"model": "deepseek-flash",
+		"choices": []any{map[string]any{
+			"finish_reason": "stop",
+			"message":       map[string]any{"role": "assistant", "content": answer},
+		}},
+		"usage": map[string]any{"prompt_tokens": 11, "completion_tokens": 7},
+	}
+}
+
+// toolCallCompletion mirrors a model turn that asks for a tool instead of
+// answering.
+func toolCallCompletion(id, name, arguments string) map[string]any {
+	return map[string]any{
+		"model": "deepseek-flash",
+		"choices": []any{map[string]any{
+			"finish_reason": "tool_calls",
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": "",
+				"tool_calls": []any{map[string]any{
+					"id":       id,
+					"type":     "function",
+					"function": map[string]any{"name": name, "arguments": arguments},
+				}},
+			},
+		}},
+		"usage": map[string]any{"prompt_tokens": 11, "completion_tokens": 7},
+	}
+}
+
+// groundedResponse mirrors a Gemini Interactions response with Google Search
+// grounding: the answer lives in a model_output step, the pages it used in
+// url_citation annotations.
+func groundedResponse(answer, sourceURL, sourceTitle string) map[string]any {
+	return map[string]any{
+		"steps": []any{
+			map[string]any{"type": "google_search_call", "arguments": map[string]any{"queries": []any{"q"}}},
+			map[string]any{
+				"type": "model_output",
+				"content": []any{map[string]any{
+					"type": "text",
+					"text": answer,
+					"annotations": []any{
+						map[string]any{"type": "url_citation", "url": sourceURL, "title": sourceTitle},
+					},
+				}},
+			},
+		},
+	}
 }
 
 func (f *fakeUpstream) sentMessages() []sentMessage {
@@ -130,6 +206,11 @@ func setupBot(t *testing.T, fake *fakeUpstream) {
 	t.Setenv("DEEPSEEK_MODEL", "")
 	t.Setenv("DEEPSEEK_REASONING_EFFORT", "")
 	t.Setenv("SYSTEM_PROMPT", "")
+	// Web search stays off unless a test turns it on, so the other tests
+	// exercise the bot exactly as it behaves without a Gemini key.
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GEMINI_BASE_URL", fake.URL)
+	t.Setenv("GEMINI_MODEL", "")
 }
 
 func postUpdate(t *testing.T, body, secret string) *httptest.ResponseRecorder {

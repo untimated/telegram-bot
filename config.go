@@ -35,6 +35,9 @@ type config struct {
 	deepSeekModel   string
 	reasoningEffort string
 	systemPrompt    string
+	geminiAPIKey    string
+	geminiBaseURL   string
+	geminiModel     string
 }
 
 // loadConfig reads the environment on every request so that a misconfigured
@@ -49,6 +52,9 @@ func loadConfig() (config, error) {
 		deepSeekModel:   envOrDefault("DEEPSEEK_MODEL", defaultDeepSeekModel),
 		reasoningEffort: envOrDefault("DEEPSEEK_REASONING_EFFORT", defaultReasoningEffort),
 		systemPrompt:    envOrDefault("SYSTEM_PROMPT", defaultSystemPrompt),
+		geminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
+		geminiBaseURL:   envOrDefault("GEMINI_BASE_URL", defaultGeminiBaseURL),
+		geminiModel:     envOrDefault("GEMINI_MODEL", defaultGeminiModel),
 	}
 
 	var missing []string
@@ -78,13 +84,24 @@ func (c config) telegram() *telegramClient {
 }
 
 func (c config) deepSeek() *deepSeekClient {
-	return &deepSeekClient{
+	client := &deepSeekClient{
 		apiKey:          c.deepSeekAPIKey,
 		baseURL:         c.deepSeekBaseURL,
 		model:           c.deepSeekModel,
 		reasoningEffort: c.reasoningEffort,
 		http:            httpClient,
 	}
+	// Without a Gemini key the bot simply answers from the model's own
+	// knowledge: no search tool is offered, so nothing changes.
+	if c.geminiAPIKey != "" {
+		client.search = &geminiSearcher{
+			apiKey:  c.geminiAPIKey,
+			baseURL: c.geminiBaseURL,
+			model:   c.geminiModel,
+			http:    httpClient,
+		}
+	}
+	return client
 }
 
 func envOrDefault(key, fallback string) string {

@@ -148,5 +148,6 @@ func (c *telegramClient) username(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	c.cachedUsername = me.Username
 	c.mu.Unlock()
+	log.Printf("telegrambot: resolved the bot's own username as @%s", me.Username)
 	return me.Username, nil
 }

@@ -1,4 +1,4 @@
-module telegram/general-bot
+module github.com/untimated/telegram-bot
 
 go 1.27.1
 

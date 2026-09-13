@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"regexp"
@@ -26,6 +27,9 @@ const (
 	maxResponseBytes = 1 << 20
 	// typingAction is the chat action shown while the model is working.
 	typingAction = "typing"
+	// maxQuotedUnits caps how much of a replied-to message is quoted back to
+	// the model, so one long message cannot dominate the prompt.
+	maxQuotedUnits = 1000
 )
 
 const helpText = "Hi! I'm a DeepSeek-powered assistant. Send me a message and I'll answer.\n" +
@@ -46,17 +50,27 @@ type update struct {
 }
 
 type message struct {
-	MessageID       int64    `json:"message_id"`
-	MessageThreadID int64    `json:"message_thread_id"`
-	From            *user    `json:"from"`
-	Chat            chat     `json:"chat"`
-	Text            string   `json:"text"`
-	ReplyTo         *message `json:"reply_to_message"`
+	MessageID       int64      `json:"message_id"`
+	MessageThreadID int64      `json:"message_thread_id"`
+	From            *user      `json:"from"`
+	Chat            chat       `json:"chat"`
+	Text            string     `json:"text"`
+	Caption         string     `json:"caption"`
+	ReplyTo         *message   `json:"reply_to_message"`
+	Quote           *textQuote `json:"quote"`
+}
+
+// textQuote is the part of a replied-to message the sender selected. Telegram
+// also adds quotes by itself, which is what is_manual distinguishes.
+type textQuote struct {
+	Text     string `json:"text"`
+	IsManual bool   `json:"is_manual"`
 }
 
 type user struct {
-	IsBot    bool   `json:"is_bot"`
-	Username string `json:"username"`
+	IsBot     bool   `json:"is_bot"`
+	Username  string `json:"username"`
+	FirstName string `json:"first_name"`
 }
 
 type chat struct {
@@ -157,7 +171,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 
 	answer, err := cfg.deepSeek().complete(ctx, []chatMessage{
 		{Role: "system", Content: cfg.systemPrompt},
-		{Role: "user", Content: text},
+		{Role: "user", Content: replyPreamble(msg) + text},
 	})
 	if err != nil {
 		log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
@@ -209,4 +223,60 @@ func botCommand(text string) (string, bool) {
 		return "", false
 	}
 	return strings.ToLower(command), true
+}
+
+// replyPreamble describes the message being replied to, so that a follow-up like
+// "what about the second one?" reaches the model with something to refer to. It
+// returns "" when the message is not a reply, or the reply has no text.
+func replyPreamble(msg *message) string {
+	quoted, author := "", ""
+
+	switch {
+	case msg.Quote != nil && msg.Quote.IsManual && strings.TrimSpace(msg.Quote.Text) != "":
+		// The sender highlighted part of the original: that part is the point.
+		quoted = msg.Quote.Text
+		if msg.ReplyTo != nil {
+			author = senderName(msg.ReplyTo.From)
+		}
+	case msg.ReplyTo != nil:
+		quoted = firstText(msg.ReplyTo)
+		author = senderName(msg.ReplyTo.From)
+	}
+
+	quoted = strings.TrimSpace(quoted)
+	if quoted == "" {
+		return ""
+	}
+	if author == "" {
+		author = "someone"
+	}
+	if cut := cutAt(quoted, maxQuotedUnits); cut < len(quoted) {
+		quoted = strings.TrimSpace(quoted[:cut]) + "…"
+	}
+
+	// The quoted text was written by a chat member, so it is fenced off from the
+	// instruction that follows.
+	return fmt.Sprintf("The user is replying to a message from %s:\n\"\"\"\n%s\n\"\"\"\n\nTheir message:\n", author, quoted)
+}
+
+// firstText returns a message's text, or its caption for media messages.
+func firstText(msg *message) string {
+	if msg.Text != "" {
+		return msg.Text
+	}
+	return msg.Caption
+}
+
+// senderName labels the author of a message for the model's benefit.
+func senderName(from *user) string {
+	switch {
+	case from == nil:
+		return ""
+	case from.IsBot:
+		return "you, the assistant"
+	case from.Username != "":
+		return "@" + from.Username
+	default:
+		return from.FirstName
+	}
 }

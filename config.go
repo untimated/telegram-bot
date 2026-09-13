@@ -18,7 +18,9 @@ const (
 
 const defaultSystemPrompt = "You are a helpful assistant in a Telegram chat. " +
 	"Reply in the language the user writes in. Be concise and format answers " +
-	"with standard Markdown (bold, lists, inline and fenced code blocks, links)."
+	"with standard Markdown (bold, lists, inline and fenced code blocks, links). " +
+	"Never use tables: Telegram cannot render them, so use short bullet lists instead. " +
+	"When you looked something up, mention where the information came from."
 
 // reasoningEfforts mirrors the values accepted by the DeepSeek API. The default
 // is "none", which turns thinking mode off: thinking tokens are slow and billed,

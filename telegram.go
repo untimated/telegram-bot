@@ -1,0 +1,152 @@
+package telegrambot
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+)
+
+type telegramClient struct {
+	token   string
+	apiBase string
+	http    *http.Client
+
+	mu             sync.Mutex
+	cachedUsername string
+}
+
+type telegramEnvelope struct {
+	OK          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result"`
+	ErrorCode   int             `json:"error_code"`
+	Description string          `json:"description"`
+}
+
+type telegramError struct {
+	Method      string
+	Code        int
+	Description string
+}
+
+func (e *telegramError) Error() string {
+	return fmt.Sprintf("telegram %s: %d %s", e.Method, e.Code, e.Description)
+}
+
+func (c *telegramClient) call(ctx context.Context, method string, payload, result any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("telegram %s: encode request: %w", method, err)
+	}
+
+	url := strings.TrimRight(c.apiBase, "/") + "/bot" + c.token + "/" + method
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("telegram %s: %w", method, err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("telegram %s: %w", method, err)
+	}
+	defer response.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
+	if err != nil {
+		return fmt.Errorf("telegram %s: read response: %w", method, err)
+	}
+
+	var envelope telegramEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return fmt.Errorf("telegram %s: %d: %s", method, response.StatusCode, bodySnippet(raw))
+	}
+	if !envelope.OK {
+		return &telegramError{Method: method, Code: envelope.ErrorCode, Description: envelope.Description}
+	}
+	if result != nil {
+		if err := json.Unmarshal(envelope.Result, result); err != nil {
+			return fmt.Errorf("telegram %s: decode result: %w", method, err)
+		}
+	}
+	return nil
+}
+
+type sendMessageRequest struct {
+	ChatID          int64  `json:"chat_id"`
+	MessageThreadID int64  `json:"message_thread_id,omitempty"`
+	Text            string `json:"text"`
+	ParseMode       string `json:"parse_mode,omitempty"`
+}
+
+// send delivers an answer as Telegram HTML, split into as many messages as the
+// length limit requires. A chunk Telegram refuses to parse is retried as plain
+// text, so a formatting surprise never costs the user their answer.
+func (c *telegramClient) send(ctx context.Context, chatID, threadID int64, markdown string) error {
+	for _, chunk := range splitTelegramHTML(markdownToHTML(markdown), telegramMessageLimit) {
+		err := c.call(ctx, "sendMessage", sendMessageRequest{
+			ChatID:          chatID,
+			MessageThreadID: threadID,
+			Text:            chunk,
+			ParseMode:       "HTML",
+		}, nil)
+		if err == nil {
+			continue
+		}
+
+		var refused *telegramError
+		if !errors.As(err, &refused) || refused.Code != http.StatusBadRequest {
+			return err
+		}
+		plain := htmlToPlain(chunk)
+		if plain == "" {
+			return err
+		}
+		log.Printf("telegrambot: chat %d: Telegram rejected the markup (%s), retrying as plain text", chatID, refused.Description)
+		if err := c.call(ctx, "sendMessage", sendMessageRequest{
+			ChatID:          chatID,
+			MessageThreadID: threadID,
+			Text:            plain,
+		}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, action string) error {
+	return c.call(ctx, "sendChatAction", struct {
+		ChatID int64  `json:"chat_id"`
+		Action string `json:"action"`
+	}{ChatID: chatID, Action: action}, nil)
+}
+
+// username resolves the bot's own @handle, which is what tells whether a group
+// message is addressed to it. Successful lookups are cached for the life of the
+// instance; failures are not, so a hiccup does not disable the bot until restart.
+func (c *telegramClient) username(ctx context.Context) (string, error) {
+	c.mu.Lock()
+	cached := c.cachedUsername
+	c.mu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+
+	var me struct {
+		Username string `json:"username"`
+	}
+	if err := c.call(ctx, "getMe", struct{}{}, &me); err != nil {
+		return "", err
+	}
+
+	c.mu.Lock()
+	c.cachedUsername = me.Username
+	c.mu.Unlock()
+	return me.Username, nil
+}

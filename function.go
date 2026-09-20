@@ -156,6 +156,11 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		log.Printf("telegrambot: ignoring update %d from chat %d, which is not in ALLOWED_CHAT_IDS", incoming.UpdateID, msg.Chat.ID)
 		return nil
 	}
+	isGroup := msg.Chat.Type == "group" || msg.Chat.Type == "supergroup"
+	var previous []historyEntry
+	if isGroup {
+		previous = recentGroupMessages.remember(msg)
+	}
 
 	telegram := cfg.telegram()
 	if msg.Chat.Type != "private" {
@@ -180,7 +185,8 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	stopTyping := telegram.keepTyping(ctx, msg.Chat.ID, msg.MessageThreadID, typingRefreshInterval)
 	defer stopTyping()
 
-	prompt := replyPreamble(msg) + text
+	historyContext := historyPreamble(previous)
+	prompt := historyContext + replyPreamble(msg) + text
 	userContent := any(prompt)
 	if len(photo) > 0 {
 		imageURL, err := telegram.photoDataURL(ctx, photo[len(photo)-1].FileID)
@@ -193,7 +199,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 				"Sorry, I couldn't read that photo. Please try again in a moment.")
 		}
 		if text == "" {
-			prompt = replyPreamble(msg) + "What is in this image?"
+			prompt = historyContext + replyPreamble(msg) + "What is in this image?"
 		}
 		userContent = []chatContentPart{
 			{Type: "text", Text: prompt},
@@ -214,13 +220,22 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		return telegram.send(noticeCtx, msg.Chat.ID, msg.MessageThreadID,
 			"Sorry, I couldn't reach the model just now. Please try again in a moment.")
 	}
-	return telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, answer)
+	if err := telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, answer); err != nil {
+		return err
+	}
+	if isGroup {
+		recentGroupMessages.rememberBot(msg.Chat.ID, msg.MessageThreadID, answer)
+	}
+	return nil
 }
 
 // groupText reports whether a group message is addressed to the bot and returns
 // the text to send to the model with the mention removed. Only mentions and
 // replies to the bot are answered, so the bot stays quiet during normal chatter.
 func groupText(ctx context.Context, telegram *telegramClient, msg *message, text string) (string, bool) {
+	if msg.ReplyTo == nil && !strings.Contains(text, "@") {
+		return "", false
+	}
 	username, err := telegram.username(ctx)
 	if err != nil {
 		// Answering is the better failure mode: if Telegram is unreachable the

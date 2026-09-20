@@ -221,6 +221,7 @@ func writeJSON(w http.ResponseWriter, value any) {
 // set explicitly so credentials on the machine running the tests cannot leak in.
 func setupBot(t *testing.T, fake *fakeUpstream) {
 	t.Helper()
+	recentGroupMessages.reset()
 	t.Setenv("TELEGRAM_BOT_TOKEN", testBotToken)
 	t.Setenv("TELEGRAM_API_BASE", fake.URL)
 	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")

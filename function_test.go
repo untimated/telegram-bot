@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 const testBotToken = "test-token"
@@ -26,6 +28,7 @@ type fakeUpstream struct {
 	paths        []string
 	deepSeekReqs []map[string]any
 	searchReqs   []map[string]any
+	typingReqs   []map[string]any
 	sent         []sentMessage
 	reply        string
 	responses    []map[string]any // scripted model turns, consumed before reply
@@ -85,6 +88,10 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"username": "testbot", "is_bot": true}})
 
+	case strings.HasSuffix(r.URL.Path, "/sendChatAction"):
+		f.typingReqs = append(f.typingReqs, body)
+		writeJSON(w, map[string]any{"ok": true, "result": true})
+
 	case strings.HasSuffix(r.URL.Path, "/getFile"):
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"file_path": "photos/test.png", "file_size": len(f.photoBytes)}})
 
@@ -121,6 +128,12 @@ func (f *fakeUpstream) searchRequests() []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.searchReqs...)
+}
+
+func (f *fakeUpstream) typingRequests() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]map[string]any(nil), f.typingReqs...)
 }
 
 // nextCompletion returns the next scripted model turn, or a plain answer.
@@ -322,6 +335,38 @@ func TestPrivateMessageIsAnsweredByModel(t *testing.T) {
 	}
 	if !strings.Contains(sent[0].Text, "Sure — 2+2 is 4.") {
 		t.Errorf("reply = %q, want the model's answer", sent[0].Text)
+	}
+}
+
+func TestTypingIsRenewedUntilStopped(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setupBot(t, fake)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cfg, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := cfg.telegram().keepTyping(ctx, 4242, 17, 20*time.Millisecond)
+	defer stop()
+	deadline := time.After(time.Second)
+	for len(fake.typingRequests()) < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("typing action was not renewed while waiting")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	stop()
+	requests := fake.typingRequests()
+	for _, request := range requests {
+		if request["action"] != "typing" || request["chat_id"] != float64(4242) || request["message_thread_id"] != float64(17) {
+			t.Errorf("typing request = %v, want the chat and thread", request)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := len(fake.typingRequests()); got != len(requests) {
+		t.Errorf("typing actions after stop = %d, want %d", got, len(requests))
 	}
 }
 

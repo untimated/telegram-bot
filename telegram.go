@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 type telegramClient struct {
@@ -24,6 +25,7 @@ type telegramClient struct {
 }
 
 const maxPhotoBytes = 20 << 20 // Telegram's getFile download limit.
+const typingRefreshInterval = 4 * time.Second
 
 type telegramEnvelope struct {
 	OK          bool            `json:"ok"`
@@ -123,11 +125,38 @@ func (c *telegramClient) send(ctx context.Context, chatID, threadID int64, markd
 	return nil
 }
 
-func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, action string) error {
+func (c *telegramClient) sendChatAction(ctx context.Context, chatID, threadID int64, action string) error {
 	return c.call(ctx, "sendChatAction", struct {
-		ChatID int64  `json:"chat_id"`
-		Action string `json:"action"`
-	}{ChatID: chatID, Action: action}, nil)
+		ChatID          int64  `json:"chat_id"`
+		MessageThreadID int64  `json:"message_thread_id,omitempty"`
+		Action          string `json:"action"`
+	}{ChatID: chatID, MessageThreadID: threadID, Action: action}, nil)
+}
+
+// keepTyping sends one action immediately and renews it until stop is called.
+// stop waits for any in-flight request, so no typing action follows the reply.
+func (c *telegramClient) keepTyping(ctx context.Context, chatID, threadID int64, interval time.Duration) func() {
+	typingCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			if err := c.sendChatAction(typingCtx, chatID, threadID, typingAction); err != nil && typingCtx.Err() == nil {
+				log.Printf("telegrambot: typing indicator for chat %d: %s", chatID, strings.ReplaceAll(err.Error(), c.token, "[redacted]"))
+			}
+			select {
+			case <-ticker.C:
+			case <-typingCtx.Done():
+				return
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
 }
 
 // photoDataURL downloads a Telegram photo and embeds it for DeepSeek. A Telegram

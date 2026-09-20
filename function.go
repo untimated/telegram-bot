@@ -177,15 +177,15 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		}
 	}
 
-	if err := telegram.sendChatAction(ctx, msg.Chat.ID, typingAction); err != nil {
-		log.Printf("telegrambot: typing indicator for chat %d: %v", msg.Chat.ID, err)
-	}
+	stopTyping := telegram.keepTyping(ctx, msg.Chat.ID, msg.MessageThreadID, typingRefreshInterval)
+	defer stopTyping()
 
 	prompt := replyPreamble(msg) + text
 	userContent := any(prompt)
 	if len(photo) > 0 {
 		imageURL, err := telegram.photoDataURL(ctx, photo[len(photo)-1].FileID)
 		if err != nil {
+			stopTyping()
 			log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
 			noticeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
@@ -205,6 +205,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		{Role: "system", Content: cfg.systemPrompt},
 		{Role: "user", Content: userContent},
 	})
+	stopTyping()
 	if err != nil {
 		log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
 		// Report the failure on a context that survives an expired deadline.

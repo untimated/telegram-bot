@@ -50,14 +50,19 @@ type update struct {
 }
 
 type message struct {
-	MessageID       int64      `json:"message_id"`
-	MessageThreadID int64      `json:"message_thread_id"`
-	From            *user      `json:"from"`
-	Chat            chat       `json:"chat"`
-	Text            string     `json:"text"`
-	Caption         string     `json:"caption"`
-	ReplyTo         *message   `json:"reply_to_message"`
-	Quote           *textQuote `json:"quote"`
+	MessageID       int64       `json:"message_id"`
+	MessageThreadID int64       `json:"message_thread_id"`
+	From            *user       `json:"from"`
+	Chat            chat        `json:"chat"`
+	Text            string      `json:"text"`
+	Caption         string      `json:"caption"`
+	Photo           []photoSize `json:"photo"`
+	ReplyTo         *message    `json:"reply_to_message"`
+	Quote           *textQuote  `json:"quote"`
+}
+
+type photoSize struct {
+	FileID string `json:"file_id"`
 }
 
 // textQuote is the part of a replied-to message the sender selected. Telegram
@@ -136,7 +141,10 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		return nil
 	}
 	text := strings.TrimSpace(msg.Text)
-	if text == "" {
+	if len(msg.Photo) > 0 {
+		text = strings.TrimSpace(msg.Caption)
+	}
+	if text == "" && len(msg.Photo) == 0 {
 		return nil
 	}
 	log.Printf("telegrambot: update %d received from chat %d (%s)", incoming.UpdateID, msg.Chat.ID, msg.Chat.Type)
@@ -152,7 +160,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 			log.Printf("telegrambot: update %d: no mention of the bot, ignoring", incoming.UpdateID)
 			return nil
 		}
-		if text == "" {
+		if text == "" && len(msg.Photo) == 0 {
 			// The mention was the whole message.
 			return telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, helpText)
 		}
@@ -169,9 +177,29 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		log.Printf("telegrambot: typing indicator for chat %d: %v", msg.Chat.ID, err)
 	}
 
+	prompt := replyPreamble(msg) + text
+	userContent := any(prompt)
+	if len(msg.Photo) > 0 {
+		imageURL, err := telegram.photoDataURL(ctx, msg.Photo[len(msg.Photo)-1].FileID)
+		if err != nil {
+			log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
+			noticeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return telegram.send(noticeCtx, msg.Chat.ID, msg.MessageThreadID,
+				"Sorry, I couldn't read that photo. Please try again in a moment.")
+		}
+		if text == "" {
+			prompt = replyPreamble(msg) + "What is in this image?"
+		}
+		userContent = []chatContentPart{
+			{Type: "text", Text: prompt},
+			{Type: "image_url", ImageURL: &chatImageURL{URL: imageURL}},
+		}
+	}
+
 	answer, err := cfg.deepSeek().complete(ctx, []chatMessage{
 		{Role: "system", Content: cfg.systemPrompt},
-		{Role: "user", Content: replyPreamble(msg) + text},
+		{Role: "user", Content: userContent},
 	})
 	if err != nil {
 		log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)

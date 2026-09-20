@@ -21,9 +21,19 @@ const (
 
 type chatMessage struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Content    any        `json:"content"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
 }
 
 type toolCall struct {
@@ -129,7 +139,8 @@ func (c *deepSeekClient) complete(ctx context.Context, messages []chatMessage) (
 
 		choice := completion.Choices[0]
 		if len(choice.Message.ToolCalls) == 0 {
-			answer := strings.TrimSpace(choice.Message.Content)
+			answer, _ := choice.Message.Content.(string)
+			answer = strings.TrimSpace(answer)
 			if answer == "" {
 				return "", fmt.Errorf("deepseek: empty answer (finish_reason=%q)", choice.FinishReason)
 			}
@@ -142,6 +153,9 @@ func (c *deepSeekClient) complete(ctx context.Context, messages []chatMessage) (
 		}
 
 		// Feed the assistant's tool calls and their results back in.
+		if choice.Message.Content == nil {
+			choice.Message.Content = ""
+		}
 		messages = append(messages, choice.Message)
 		for _, call := range choice.Message.ToolCalls {
 			messages = append(messages, chatMessage{

@@ -3,6 +3,7 @@ package telegrambot
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ type telegramClient struct {
 	mu             sync.Mutex
 	cachedUsername string
 }
+
+const maxPhotoBytes = 20 << 20 // Telegram's getFile download limit.
 
 type telegramEnvelope struct {
 	OK          bool            `json:"ok"`
@@ -125,6 +128,51 @@ func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, actio
 		ChatID int64  `json:"chat_id"`
 		Action string `json:"action"`
 	}{ChatID: chatID, Action: action}, nil)
+}
+
+// photoDataURL downloads a Telegram photo and embeds it for DeepSeek. A Telegram
+// download URL contains the bot token, so it must not be sent to the model.
+func (c *telegramClient) photoDataURL(ctx context.Context, fileID string) (string, error) {
+	var file struct {
+		FilePath string `json:"file_path"`
+		FileSize int64  `json:"file_size"`
+	}
+	if err := c.call(ctx, "getFile", struct {
+		FileID string `json:"file_id"`
+	}{FileID: fileID}, &file); err != nil {
+		return "", fmt.Errorf("telegram: getFile: %s", strings.ReplaceAll(err.Error(), c.token, "[redacted]"))
+	}
+	if file.FilePath == "" || file.FileSize > maxPhotoBytes {
+		return "", errors.New("telegram: photo is unavailable or too large")
+	}
+
+	url := strings.TrimRight(c.apiBase, "/") + "/file/bot" + c.token + "/" + strings.TrimLeft(file.FilePath, "/")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("telegram: prepare photo download: %s", strings.ReplaceAll(err.Error(), c.token, "[redacted]"))
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("telegram: download photo: %s", strings.ReplaceAll(err.Error(), c.token, "[redacted]"))
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("telegram: download photo: HTTP %d", response.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxPhotoBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("telegram: read photo: %w", err)
+	}
+	if len(data) == 0 || len(data) > maxPhotoBytes {
+		return "", errors.New("telegram: photo is empty or too large")
+	}
+	mime := http.DetectContentType(data)
+	switch mime {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	default:
+		return "", fmt.Errorf("telegram: unsupported photo format %q", mime)
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 // username resolves the bot's own @handle, which is what tells whether a group

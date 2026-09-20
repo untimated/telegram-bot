@@ -1,8 +1,12 @@
 package telegrambot
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +33,7 @@ type fakeUpstream struct {
 	rejectHTML   bool
 	searchText   string
 	searchCode   int
+	photoBytes   []byte
 }
 
 type sentMessage struct {
@@ -79,6 +84,12 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"username": "testbot", "is_bot": true}})
+
+	case strings.HasSuffix(r.URL.Path, "/getFile"):
+		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"file_path": "photos/test.png", "file_size": len(f.photoBytes)}})
+
+	case strings.HasSuffix(r.URL.Path, "/file/bot"+testBotToken+"/photos/test.png"):
+		_, _ = w.Write(f.photoBytes)
 
 	case strings.HasSuffix(r.URL.Path, "/sendMessage"):
 		if f.rejectHTML && body["parse_mode"] == "HTML" {
@@ -240,6 +251,28 @@ func groupUpdate(text string, replyToBot bool) string {
 		text, reply)
 }
 
+func photoUpdate(chatType, caption string, replyToBot bool) string {
+	chatID := int64(4242)
+	if chatType != "private" {
+		chatID = -100
+	}
+	reply := ""
+	if replyToBot {
+		reply = `,"reply_to_message":{"message_id":7,"from":{"is_bot":true,"username":"testbot"}}`
+	}
+	return fmt.Sprintf(`{"update_id":8,"message":{"message_id":9,"caption":%q,"photo":[{"file_id":"small"},{"file_id":"large"}],`+
+		`"chat":{"id":%d,"type":%q},"from":{"is_bot":false}%s}}`, caption, chatID, chatType, reply)
+}
+
+func setTestPhoto(t *testing.T, fake *fakeUpstream) {
+	t.Helper()
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	fake.photoBytes = data.Bytes()
+}
+
 func lastUserMessage(t *testing.T, request map[string]any) map[string]any {
 	t.Helper()
 	messages, ok := request["messages"].([]any)
@@ -292,6 +325,95 @@ func TestPrivateMessageIsAnsweredByModel(t *testing.T) {
 	}
 }
 
+func TestPrivatePhotoGoesDirectlyToDeepSeek(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setTestPhoto(t, fake)
+	setupBot(t, fake)
+	t.Setenv("GEMINI_API_KEY", "test-gemini-key")
+
+	if code := postUpdate(t, photoUpdate("private", "What is this?", false), "").Code; code != http.StatusOK {
+		t.Fatalf("webhook status = %d, want 200", code)
+	}
+	requests := fake.deepSeekRequests()
+	if len(requests) != 1 {
+		t.Fatalf("deepseek requests = %d, want 1", len(requests))
+	}
+	if got := requests[0]["model"]; got != "deepseek-flash" {
+		t.Errorf("model = %v, want deepseek-flash", got)
+	}
+	parts, ok := lastUserMessage(t, requests[0])["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("user content = %v, want text and image parts", lastUserMessage(t, requests[0])["content"])
+	}
+	textPart, _ := parts[0].(map[string]any)
+	if textPart["type"] != "text" || textPart["text"] != "What is this?" {
+		t.Errorf("text part = %v", textPart)
+	}
+	imagePart, _ := parts[1].(map[string]any)
+	imageURL, _ := imagePart["image_url"].(map[string]any)
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(fake.photoBytes)
+	if imagePart["type"] != "image_url" || imageURL["url"] != wantURL {
+		t.Errorf("image part = %v, want inline PNG", imagePart)
+	}
+	if len(fake.searchRequests()) != 0 {
+		t.Errorf("Gemini search requests = %d, want 0", len(fake.searchRequests()))
+	}
+	if len(fake.sentMessages()) != 1 {
+		t.Errorf("Telegram replies = %d, want 1", len(fake.sentMessages()))
+	}
+}
+
+func TestPhotoWithoutCaptionAndGroupAddressing(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setTestPhoto(t, fake)
+	setupBot(t, fake)
+
+	postUpdate(t, photoUpdate("private", "", false), "")
+	if got := fake.deepSeekRequests(); len(got) != 1 {
+		t.Fatalf("captionless private photo made %d model requests, want 1", len(got))
+	} else {
+		parts := lastUserMessage(t, got[0])["content"].([]any)
+		if parts[0].(map[string]any)["text"] != "What is in this image?" {
+			t.Errorf("photo-only prompt = %v", parts[0])
+		}
+	}
+
+	postUpdate(t, photoUpdate("supergroup", "Look at this", false), "")
+	if len(fake.deepSeekRequests()) != 1 {
+		t.Fatal("unaddressed group photo reached DeepSeek")
+	}
+	postUpdate(t, photoUpdate("supergroup", "@testbot what is this?", false), "")
+	if got := fake.deepSeekRequests(); len(got) != 2 {
+		t.Fatalf("mentioned group photo made %d model requests, want 2 total", len(got))
+	} else {
+		parts := lastUserMessage(t, got[1])["content"].([]any)
+		if parts[0].(map[string]any)["text"] != "what is this?" {
+			t.Errorf("mentioned photo prompt = %v", parts[0])
+		}
+	}
+	postUpdate(t, photoUpdate("supergroup", "", true), "")
+	if len(fake.deepSeekRequests()) != 3 {
+		t.Errorf("captionless reply to bot made %d model requests, want 3 total", len(fake.deepSeekRequests()))
+	}
+}
+
+func TestUnreadablePhotoGetsOneFailureNotice(t *testing.T) {
+	fake := newFakeUpstream(t)
+	fake.photoBytes = []byte("not an image")
+	setupBot(t, fake)
+
+	if code := postUpdate(t, photoUpdate("private", "What is this?", false), "").Code; code != http.StatusOK {
+		t.Errorf("webhook status = %d, want 200", code)
+	}
+	if len(fake.deepSeekRequests()) != 0 {
+		t.Error("unreadable photo reached DeepSeek")
+	}
+	sent := fake.sentMessages()
+	if len(sent) != 1 || !strings.Contains(sent[0].Text, "couldn't read that photo") {
+		t.Errorf("failure notices = %v, want one photo error", sent)
+	}
+}
+
 func TestWebhookSecretIsEnforced(t *testing.T) {
 	fake := newFakeUpstream(t)
 	setupBot(t, fake)
@@ -317,12 +439,13 @@ func TestUpdatesWithNothingToAnswerAreIgnored(t *testing.T) {
 	setupBot(t, fake)
 
 	for name, body := range map[string]string{
-		"no message":   `{"update_id":3}`,
-		"sticker":      `{"update_id":4,"message":{"message_id":1,"chat":{"id":4242,"type":"private"},"from":{"id":1,"is_bot":false}}}`,
-		"whitespace":   privateUpdate(4242, "   "),
-		"bot author":   `{"update_id":5,"message":{"message_id":1,"text":"beep","chat":{"id":4242,"type":"private"},"from":{"id":2,"is_bot":true}}}`,
-		"channel":      `{"update_id":6,"message":{"message_id":1,"text":"hello","chat":{"id":-200,"type":"channel"},"from":{"id":3,"is_bot":false}}}`,
-		"null message": `{"update_id":7,"message":null}`,
+		"no message":    `{"update_id":3}`,
+		"sticker":       `{"update_id":4,"message":{"message_id":1,"chat":{"id":4242,"type":"private"},"from":{"id":1,"is_bot":false}}}`,
+		"other caption": `{"update_id":8,"message":{"message_id":1,"caption":"a video","chat":{"id":4242,"type":"private"},"from":{"id":1,"is_bot":false}}}`,
+		"whitespace":    privateUpdate(4242, "   "),
+		"bot author":    `{"update_id":5,"message":{"message_id":1,"text":"beep","chat":{"id":4242,"type":"private"},"from":{"id":2,"is_bot":true}}}`,
+		"channel":       `{"update_id":6,"message":{"message_id":1,"text":"hello","chat":{"id":-200,"type":"channel"},"from":{"id":3,"is_bot":false}}}`,
+		"null message":  `{"update_id":7,"message":null}`,
 	} {
 		if code := postUpdate(t, body, "").Code; code != http.StatusOK {
 			t.Errorf("%s: status = %d, want %d", name, code, http.StatusOK)

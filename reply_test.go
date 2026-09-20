@@ -29,6 +29,22 @@ func quotedReplyUpdate(text, quotedText string, manual bool) string {
 		text, quotedText, manual)
 }
 
+func replyToPhotoUpdate(chatType, text string, fromBot bool) string {
+	chatID := int64(4242)
+	if chatType != "private" {
+		chatID = -100
+	}
+	author := `{"is_bot":false,"username":"michael"}`
+	if fromBot {
+		author = `{"is_bot":true,"username":"testbot"}`
+	}
+	return fmt.Sprintf(`{"update_id":3,"message":{"message_id":9,"text":%q,`+
+		`"chat":{"id":%d,"type":%q},"from":{"is_bot":false},`+
+		`"reply_to_message":{"message_id":7,"caption":"you can recognize the pic?",`+
+		`"photo":[{"file_id":"small"},{"file_id":"quoted-photo"}],"from":%s}}}`,
+		text, chatID, chatType, author)
+}
+
 // onlyPrompt returns the single prompt the model was asked, failing the test if
 // the update never reached it.
 func onlyPrompt(t *testing.T, fake *fakeUpstream) string {
@@ -57,6 +73,52 @@ func TestReplyToTheBotsMessageCarriesContext(t *testing.T) {
 	}
 	if !strings.HasSuffix(prompt, "what about the second one?") {
 		t.Errorf("prompt = %q, want the user's own message last", prompt)
+	}
+}
+
+func TestPrivateTextReplyToPhotoCarriesTheImage(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setTestPhoto(t, fake)
+	setupBot(t, fake)
+
+	postUpdate(t, replyToPhotoUpdate("private", "how about the image I quoted?", false), "")
+	requests := fake.deepSeekRequests()
+	if len(requests) != 1 {
+		t.Fatalf("deepseek requests = %d, want 1", len(requests))
+	}
+	parts, ok := lastUserMessage(t, requests[0])["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("user content = %v, want text and quoted photo", lastUserMessage(t, requests[0])["content"])
+	}
+	textPart := parts[0].(map[string]any)
+	if prompt, _ := textPart["text"].(string); !strings.Contains(prompt, "you can recognize the pic?") || !strings.Contains(prompt, "how about the image I quoted?") {
+		t.Errorf("prompt = %v, want caption and new question", textPart)
+	}
+	imagePart := parts[1].(map[string]any)
+	imageURL, _ := imagePart["image_url"].(map[string]any)
+	url, _ := imageURL["url"].(string)
+	if imagePart["type"] != "image_url" || !strings.HasPrefix(url, "data:image/png;base64,") {
+		t.Errorf("image part = %v, want quoted photo", imagePart)
+	}
+}
+
+func TestGroupQuotedPhotoStillNeedsAddressing(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setTestPhoto(t, fake)
+	setupBot(t, fake)
+
+	postUpdate(t, replyToPhotoUpdate("supergroup", "what is this?", false), "")
+	if len(fake.deepSeekRequests()) != 0 {
+		t.Fatal("unaddressed group reply to a photo reached DeepSeek")
+	}
+	postUpdate(t, replyToPhotoUpdate("supergroup", "@testbot", false), "")
+	requests := fake.deepSeekRequests()
+	if len(requests) != 1 {
+		t.Fatalf("mentioned group reply made %d model requests, want 1", len(requests))
+	}
+	parts, ok := lastUserMessage(t, requests[0])["content"].([]any)
+	if !ok || len(parts) != 2 || parts[1].(map[string]any)["type"] != "image_url" {
+		t.Errorf("user content = %v, want quoted photo", lastUserMessage(t, requests[0])["content"])
 	}
 }
 

@@ -144,7 +144,11 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	if len(msg.Photo) > 0 {
 		text = strings.TrimSpace(msg.Caption)
 	}
-	if text == "" && len(msg.Photo) == 0 {
+	photo := msg.Photo
+	if len(photo) == 0 && msg.ReplyTo != nil {
+		photo = msg.ReplyTo.Photo
+	}
+	if text == "" && len(photo) == 0 {
 		return nil
 	}
 	log.Printf("telegrambot: update %d received from chat %d (%s)", incoming.UpdateID, msg.Chat.ID, msg.Chat.Type)
@@ -160,7 +164,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 			log.Printf("telegrambot: update %d: no mention of the bot, ignoring", incoming.UpdateID)
 			return nil
 		}
-		if text == "" && len(msg.Photo) == 0 {
+		if text == "" && len(photo) == 0 {
 			// The mention was the whole message.
 			return telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, helpText)
 		}
@@ -179,8 +183,8 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 
 	prompt := replyPreamble(msg) + text
 	userContent := any(prompt)
-	if len(msg.Photo) > 0 {
-		imageURL, err := telegram.photoDataURL(ctx, msg.Photo[len(msg.Photo)-1].FileID)
+	if len(photo) > 0 {
+		imageURL, err := telegram.photoDataURL(ctx, photo[len(photo)-1].FileID)
 		if err != nil {
 			log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
 			noticeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)

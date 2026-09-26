@@ -22,6 +22,18 @@ func setupDigestSources(t *testing.T, failExtras bool) {
 				return
 			}
 			fmt.Fprint(w, `{"date":"2026-09-25","base":"USD","quote":"IDR","rate":16512.5}`)
+		case "/v2/rates":
+			if failExtras {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if r.URL.Query().Get("base") != "USD" || r.URL.Query().Get("quotes") != "IDR" ||
+				r.URL.Query().Get("providers") != "BI" || r.URL.Query().Get("from") != "2026-09-19" ||
+				r.URL.Query().Get("to") != "2026-09-25" {
+				http.Error(w, "wrong weekly range", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprint(w, `[{"date":"2026-09-25","base":"USD","quote":"IDR","rate":16512.5},{"date":"2026-09-22","base":"USD","quote":"IDR","rate":16400}]`)
 		case "/rss/top-news.xml":
 			if failExtras {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -33,18 +45,24 @@ func setupDigestSources(t *testing.T, failExtras bool) {
 		}
 	}))
 	t.Cleanup(source.Close)
-	oldWeather, oldRate, oldNews := openMeteoBaseURL, frankfurterRateURL, antaraTopNewsURL
+	oldWeather, oldRate, oldHistory, oldNews := openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, antaraTopNewsURL
 	openMeteoBaseURL = source.URL
 	frankfurterRateURL = source.URL + "/v2/rate/USD/IDR?providers=BI"
+	frankfurterHistoryURL = source.URL + "/v2/rates"
 	antaraTopNewsURL = source.URL + "/rss/top-news.xml"
 	t.Cleanup(func() {
-		openMeteoBaseURL, frankfurterRateURL, antaraTopNewsURL = oldWeather, oldRate, oldNews
+		openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, antaraTopNewsURL = oldWeather, oldRate, oldHistory, oldNews
 	})
 }
 
 func TestGroupDigestCommandUsesAllThreeSources(t *testing.T) {
 	fake := newFakeUpstream(t)
-	fake.reply = "🌦 CUACA\nJakarta dan Tangerang berawan. Bawa payung."
+	fake.responses = []map[string]any{
+		textCompletion("🌦 CUACA\nJakarta dan Tangerang berawan. Bawa payung."),
+		textCompletion("Dalam sepekan, USD/IDR naik dengan sedikit fluktuasi."),
+		textCompletion("🌦 CUACA\nJakarta dan Tangerang berawan. Bawa payung."),
+		textCompletion("Dalam sepekan, USD/IDR naik dengan sedikit fluktuasi."),
+	}
 	setupBot(t, fake)
 	setupDigestSources(t, false)
 	t.Setenv("ALLOWED_CHAT_IDS", "-100")
@@ -56,13 +74,18 @@ func TestGroupDigestCommandUsesAllThreeSources(t *testing.T) {
 	if len(sent) != 1 || sent[0].ChatID != -100 {
 		t.Fatalf("sent = %v, want one group digest", sent)
 	}
-	for _, want := range []string{"Ringkasan pagi", "Jakarta dan Tangerang", "16.512", "2026-09-25", "Headline one", "Headline two", "Headline three"} {
+	for _, want := range []string{"Ringkasan pagi", "Jakarta dan Tangerang", "16.512", "2026-09-25", "2026-09-22–2026-09-25", "+0.69%", "sedikit fluktuasi", "Headline one", "Headline two", "Headline three", "──────────"} {
 		if !strings.Contains(sent[0].Text, want) {
 			t.Errorf("digest %q is missing %q", sent[0].Text, want)
 		}
 	}
-	if len(fake.deepSeekRequests()) != 1 {
-		t.Errorf("model calls = %d, want one for weather only", len(fake.deepSeekRequests()))
+	if len(fake.deepSeekRequests()) != 2 {
+		t.Errorf("model calls = %d, want one for weather and one for the weekly trend", len(fake.deepSeekRequests()))
+	} else {
+		prompt := lastUserMessage(t, fake.deepSeekRequests()[1])["content"].(string)
+		if !strings.Contains(prompt, "2026-09-22") || !strings.Contains(prompt, "2026-09-25") || !strings.Contains(prompt, "do not infer causes") {
+			t.Errorf("weekly trend prompt lacks rates or guardrails: %s", prompt)
+		}
 	}
 	postUpdate(t, groupUpdate("/digest@otherbot", false), "")
 	if len(fake.sentMessages()) != 1 {

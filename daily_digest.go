@@ -73,12 +73,25 @@ func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("write weather digest: %w", err)
 	}
-	sections := []string{"☀️ *Ringkasan pagi · " + forecasts[0].Date + "*", weatherText + "\nSumber: [Open-Meteo](https://open-meteo.com/en/docs)"}
+	sections := []string{weatherText + "\nSumber: [Open-Meteo](https://open-meteo.com/en/docs)"}
 	if rate, err := fetchUSDtoIDR(ctx); err != nil {
 		log.Printf("daily digest: exchange rate unavailable: %v", err)
 		sections = append(sections, "💱 *USD/IDR*\nKurs belum tersedia.")
 	} else {
-		sections = append(sections, formatExchangeRate(rate))
+		financeText := formatExchangeRate(rate)
+		if rates, err := fetchUSDIDRWeek(ctx, rate.Date); err != nil {
+			log.Printf("daily digest: weekly exchange rates unavailable: %v", err)
+			financeText += "\nTren mingguan belum tersedia."
+		} else {
+			financeText += fmt.Sprintf("\n7 hari (%s–%s): %+.2f%%", rates[0].Date, rates[len(rates)-1].Date,
+				(rates[len(rates)-1].Rate/rates[0].Rate-1)*100)
+			if summary, err := summarizeExchangeWeek(ctx, cfg, rates); err != nil {
+				log.Printf("daily digest: weekly exchange summary unavailable: %v", err)
+			} else {
+				financeText += "\n" + summary
+			}
+		}
+		sections = append(sections, financeText)
 	}
 	if headlines, err := fetchTopHeadlines(ctx); err != nil {
 		log.Printf("daily digest: headlines unavailable: %v", err)
@@ -86,7 +99,26 @@ func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
 	} else {
 		sections = append(sections, formatHeadlines(headlines))
 	}
-	return strings.Join(sections, "\n\n"), nil
+	return "☀️ *Ringkasan pagi · " + forecasts[0].Date + "*\n\n" + strings.Join(sections, "\n\n──────────\n\n"), nil
+}
+
+func summarizeExchangeWeek(ctx context.Context, cfg config, rates []exchangeRate) (string, error) {
+	ratesJSON, err := json.Marshal(rates)
+	if err != nil {
+		return "", fmt.Errorf("encode weekly exchange rates: %w", err)
+	}
+	change := (rates[len(rates)-1].Rate/rates[0].Rate - 1) * 100
+	prompt := fmt.Sprintf(`In one short Bahasa Indonesia sentence, summarize the observed USD/IDR movement across these dated Bank Indonesia rates. The first-to-last change is %+.2f%%. A rising USD/IDR means the rupiah weakened. Mention the direction and any visible fluctuation, but do not infer causes, add outside events, or predict future rates. Output only the sentence. Rates JSON: %s`, change, ratesJSON)
+	deepSeek := cfg.deepSeek()
+	deepSeek.search = nil
+	summary, err := deepSeek.complete(ctx, []chatMessage{
+		{Role: "system", Content: "Summarize only the supplied exchange-rate history. Do not speculate about causes or future prices."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(strings.Fields(summary), " "), nil
 }
 
 func dailyChatID() (int64, error) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const openMeteoBaseURL = "https://api.open-meteo.com"
+var openMeteoBaseURL = "https://api.open-meteo.com"
 
 type weatherLocation struct {
 	name      string

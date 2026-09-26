@@ -33,7 +33,8 @@ const (
 )
 
 const helpText = "Hi! I'm a DeepSeek-powered assistant. Send me a message and I'll answer.\n" +
-	"In group chats, mention me or reply to one of my messages to get a reply."
+	"In group chats, mention me or reply to one of my messages to get a reply.\n" +
+	"Use /digest for today's weather, USD/IDR rate, and top news."
 
 // httpClient is shared by both upstream clients so connections are reused
 // between the requests one instance handles.
@@ -163,6 +164,25 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	}
 
 	telegram := cfg.telegram()
+	if isDigestCommand(ctx, telegram, msg.Text) {
+		stopTyping := telegram.keepTyping(ctx, msg.Chat.ID, msg.MessageThreadID, typingRefreshInterval)
+		defer stopTyping()
+		answer, err := buildDailyDigest(ctx, cfg)
+		stopTyping()
+		if err != nil {
+			log.Printf("telegrambot: update %d: digest: %v", incoming.UpdateID, err)
+			noticeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return telegram.send(noticeCtx, msg.Chat.ID, msg.MessageThreadID, "Sorry, I couldn't prepare the digest just now. Please try again in a moment.")
+		}
+		if err := telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, answer); err != nil {
+			return err
+		}
+		if isGroup {
+			recentGroupMessages.rememberBot(msg.Chat.ID, msg.MessageThreadID, answer)
+		}
+		return nil
+	}
 	if msg.Chat.Type != "private" {
 		addressed := false
 		if text, addressed = groupText(ctx, telegram, msg, text); !addressed {
@@ -227,6 +247,25 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		recentGroupMessages.rememberBot(msg.Chat.ID, msg.MessageThreadID, answer)
 	}
 	return nil
+}
+
+// isDigestCommand accepts /digest in a group without a mention, while a
+// command addressed to another bot remains that bot's business.
+func isDigestCommand(ctx context.Context, telegram *telegramClient, text string) bool {
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return false
+	}
+	command := fields[0]
+	if strings.EqualFold(command, "/digest") {
+		return true
+	}
+	parts := strings.SplitN(command, "@", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "/digest") || parts[1] == "" {
+		return false
+	}
+	username, err := telegram.username(ctx)
+	return err == nil && strings.EqualFold(parts[1], username)
 }
 
 // groupText reports whether a group message is addressed to the bot and returns

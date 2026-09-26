@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // enableSearch turns the web_search tool on for one test.
@@ -266,6 +267,42 @@ func TestRunToolSurfacesSearchFailures(t *testing.T) {
 	if got := client.runTool(context.Background(), makeToolCall(webSearchToolName, `{"query":"news"}`)); !strings.Contains(got, "boom") {
 		t.Errorf("runTool() = %q, want the failure surfaced to the model", got)
 	}
+}
+
+type deadlineSearcher struct {
+	called   bool
+	deadline time.Time
+}
+
+func (s *deadlineSearcher) search(ctx context.Context, _ string) (string, error) {
+	s.called = true
+	s.deadline, _ = ctx.Deadline()
+	return "findings", nil
+}
+
+func TestRunToolLeavesTimeForFinalReply(t *testing.T) {
+	call := makeToolCall(webSearchToolName, `{"query":"news"}`)
+	t.Run("search has its own timeout", func(t *testing.T) {
+		stub := &deadlineSearcher{}
+		ctx, cancel := context.WithTimeout(context.Background(), replyBudget)
+		defer cancel()
+		parentDeadline, _ := ctx.Deadline()
+		if got := (&deepSeekClient{search: stub}).runTool(ctx, call); got != "findings" {
+			t.Fatalf("runTool() = %q, want findings", got)
+		}
+		if !stub.called || time.Until(stub.deadline) > webSearchTimeout || parentDeadline.Sub(stub.deadline) < finalReplyReserve-100*time.Millisecond {
+			t.Fatalf("search deadline = %v, parent deadline = %v", stub.deadline, parentDeadline)
+		}
+	})
+	t.Run("search is skipped near the reply deadline", func(t *testing.T) {
+		stub := &deadlineSearcher{}
+		ctx, cancel := context.WithTimeout(context.Background(), finalReplyReserve)
+		defer cancel()
+		got := (&deepSeekClient{search: stub}).runTool(ctx, call)
+		if stub.called || !strings.Contains(got, "could not verify") {
+			t.Fatalf("search called = %t, result = %q", stub.called, got)
+		}
+	})
 }
 
 func makeToolCall(name, arguments string) toolCall {

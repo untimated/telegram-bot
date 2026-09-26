@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,6 +18,9 @@ const (
 	// maxSearchRounds bounds how many times the model may look something up
 	// before it has to answer with what it already has.
 	maxSearchRounds = 3
+	// Keep a slow web lookup from using the time needed for the final model reply.
+	webSearchTimeout  = 10 * time.Second
+	finalReplyReserve = 15 * time.Second
 )
 
 type chatMessage struct {
@@ -242,10 +246,23 @@ func (c *deepSeekClient) runTool(ctx context.Context, call toolCall) string {
 	}
 
 	log.Printf("deepseek: searching the web for %q", query)
-	findings, err := c.search.search(ctx, query)
+	searchBudget := webSearchTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline) - finalReplyReserve
+		if remaining <= 0 {
+			log.Printf("deepseek: skipping web search: too little time remains for the reply")
+			return "error: web search unavailable because the reply deadline is near. Do not invent current facts or sources; explain that you could not verify them."
+		}
+		if remaining < searchBudget {
+			searchBudget = remaining
+		}
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, searchBudget)
+	defer cancel()
+	findings, err := c.search.search(searchCtx, query)
 	if err != nil {
 		log.Printf("deepseek: web search failed: %v", err)
-		return "error: the web search failed: " + err.Error()
+		return "error: the web search failed: " + err.Error() + ". Do not invent current facts or sources; explain that you could not verify them."
 	}
 	return findings
 }

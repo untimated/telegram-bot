@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var jakartaAndTangerang = []weatherLocation{
@@ -31,7 +32,21 @@ func RunDailyWeatherDigest(ctx context.Context) error {
 		return fmt.Errorf("DAILY_CHAT_ID %d is not included in ALLOWED_CHAT_IDS", chatID)
 	}
 
-	return sendDailyDigest(ctx, cfg, chatID, 0)
+	answer, err := buildDailyDigest(ctx, cfg)
+	if err != nil {
+		log.Printf("daily digest unavailable: %v", err)
+		message := "Today's Digest is not available. Issues with: " + err.Error()
+		noticeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if sendErr := cfg.telegram().send(noticeCtx, chatID, 0, message); sendErr != nil {
+			return fmt.Errorf("daily digest failed: %v; send failure notice: %w", err, sendErr)
+		}
+		return nil
+	}
+	if err := cfg.telegram().send(ctx, chatID, 0, answer); err != nil {
+		return fmt.Errorf("send daily digest: %w", err)
+	}
+	return nil
 }
 
 func sendDailyDigest(ctx context.Context, cfg config, chatID, threadID int64) error {

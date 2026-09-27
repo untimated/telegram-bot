@@ -128,3 +128,53 @@ func TestScheduledDigestSurvivesMissingFinanceAndNews(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduledDigestReportsPersistentWeatherFailure(t *testing.T) {
+	fake := newFakeUpstream(t)
+	setupBot(t, fake)
+	requests := 0
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, `{"error":true,"reason":"The service is overloaded"}`, http.StatusServiceUnavailable)
+	}))
+	defer source.Close()
+	oldWeather := openMeteoBaseURL
+	openMeteoBaseURL = source.URL
+	defer func() { openMeteoBaseURL = oldWeather }()
+	t.Setenv("DAILY_CHAT_ID", "-100")
+	t.Setenv("ALLOWED_CHAT_IDS", "-100")
+
+	if err := RunDailyWeatherDigest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 3 {
+		t.Errorf("weather requests = %d, want 3", requests)
+	}
+	sent := fake.sentMessages()
+	if len(sent) != 1 || sent[0].ChatID != -100 ||
+		!strings.Contains(sent[0].Text, "Today's Digest is not available") ||
+		!strings.Contains(sent[0].Text, "Jakarta forecast: HTTP 503") {
+		t.Errorf("sent = %v, want one failure notice with the cause", sent)
+	}
+}
+
+func TestWeatherForecastRetriesTemporaryFailure(t *testing.T) {
+	requests := 0
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "overloaded", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"daily":{"time":["2026-09-27"],"weather_code":[3],"temperature_2m_max":[32],"temperature_2m_min":[25],"apparent_temperature_max":[36],"precipitation_probability_max":[70],"precipitation_sum":[2],"wind_speed_10m_max":[12]}}`)
+	}))
+	defer source.Close()
+	oldWeather := openMeteoBaseURL
+	openMeteoBaseURL = source.URL
+	defer func() { openMeteoBaseURL = oldWeather }()
+
+	forecast, err := fetchWeatherForecast(context.Background(), jakartaAndTangerang[0])
+	if err != nil || forecast.Date != "2026-09-27" || requests != 2 {
+		t.Fatalf("forecast = %+v, err = %v, requests = %d", forecast, err, requests)
+	}
+}

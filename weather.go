@@ -3,11 +3,13 @@ package telegrambot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 var openMeteoBaseURL = "https://api.open-meteo.com"
@@ -44,6 +46,25 @@ type openMeteoResponse struct {
 }
 
 func fetchWeatherForecast(ctx context.Context, location weatherLocation) (weatherForecast, error) {
+	var forecast weatherForecast
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		forecast, err = fetchWeatherForecastOnce(ctx, location)
+		if err == nil || !isTemporaryWeatherError(err) || attempt == 2 {
+			return forecast, err
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return weatherForecast{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return forecast, err
+}
+
+func fetchWeatherForecastOnce(ctx context.Context, location weatherLocation) (weatherForecast, error) {
 	query := url.Values{}
 	query.Set("latitude", location.latitude)
 	query.Set("longitude", location.longitude)
@@ -78,8 +99,7 @@ func fetchWeatherForecast(ctx context.Context, location weatherLocation) (weathe
 		return weatherForecast{}, fmt.Errorf("read %s forecast: %w", location.name, err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return weatherForecast{}, fmt.Errorf("fetch %s forecast: HTTP %d: %s",
-			location.name, response.StatusCode, bodySnippet(body))
+		return weatherForecast{}, weatherHTTPError{location: location.name, status: response.StatusCode, body: bodySnippet(body)}
 	}
 
 	var data openMeteoResponse
@@ -105,6 +125,21 @@ func fetchWeatherForecast(ctx context.Context, location weatherLocation) (weathe
 		PrecipitationSumMM:       daily.PrecipitationSum[0],
 		WindSpeedMaxKmh:          daily.WindSpeedMax[0],
 	}, nil
+}
+
+type weatherHTTPError struct {
+	location string
+	status   int
+	body     string
+}
+
+func (e weatherHTTPError) Error() string {
+	return fmt.Sprintf("fetch %s forecast: HTTP %d: %s", e.location, e.status, e.body)
+}
+
+func isTemporaryWeatherError(err error) bool {
+	var httpErr weatherHTTPError
+	return errors.As(err, &httpErr) && (httpErr.status == http.StatusTooManyRequests || httpErr.status >= 500)
 }
 
 func weatherCondition(code int) string {

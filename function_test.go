@@ -371,6 +371,40 @@ func TestTypingIsRenewedUntilStopped(t *testing.T) {
 	}
 }
 
+func TestTypingRetriesAfterStalledTelegramRequest(t *testing.T) {
+	var attempts int
+	var mu sync.Mutex
+	secondRequest := make(chan struct{}, 1)
+	releaseFirst := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		current := attempts
+		mu.Unlock()
+		if current == 1 {
+			<-releaseFirst
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "result": true})
+		select {
+		case secondRequest <- struct{}{}:
+		default:
+		}
+	}))
+	defer func() {
+		close(releaseFirst)
+		server.Close()
+	}()
+	client := &telegramClient{token: testBotToken, apiBase: server.URL, http: &http.Client{Timeout: time.Second}}
+	stop := client.keepTyping(context.Background(), 4242, 0, 40*time.Millisecond)
+	defer stop()
+	select {
+	case <-secondRequest:
+	case <-time.After(time.Second):
+		t.Fatal("a stalled typing request prevented the next refresh")
+	}
+}
+
 func TestPrivatePhotoGoesDirectlyToDeepSeek(t *testing.T) {
 	fake := newFakeUpstream(t)
 	setTestPhoto(t, fake)

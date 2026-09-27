@@ -142,8 +142,12 @@ func (c *telegramClient) keepTyping(ctx context.Context, chatID, threadID int64,
 		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		requestTimeout := min(interval, 3*time.Second)
 		for {
-			if err := c.sendChatAction(typingCtx, chatID, threadID, typingAction); err != nil && typingCtx.Err() == nil {
+			requestCtx, requestCancel := context.WithTimeout(typingCtx, requestTimeout)
+			err := c.sendChatAction(requestCtx, chatID, threadID, typingAction)
+			requestCancel()
+			if err != nil && typingCtx.Err() == nil {
 				log.Printf("telegrambot: typing indicator for chat %d: %s", chatID, strings.ReplaceAll(err.Error(), c.token, "[redacted]"))
 			}
 			select {

@@ -28,35 +28,37 @@ const defaultSystemPrompt = "You are a helpful assistant in a Telegram chat. " +
 var reasoningEfforts = map[string]bool{"none": true, "low": true, "high": true, "max": true}
 
 type config struct {
-	telegramToken   string
-	telegramAPIBase string
-	webhookSecret   string
-	allowedChatIDs  map[int64]bool // nil means every chat is allowed
-	deepSeekAPIKey  string
-	deepSeekBaseURL string
-	deepSeekModel   string
-	reasoningEffort string
-	systemPrompt    string
-	geminiAPIKey    string
-	geminiBaseURL   string
-	geminiModel     string
+	telegramToken     string
+	telegramAPIBase   string
+	webhookSecret     string
+	allowedChatIDs    map[int64]bool // nil means every chat is allowed
+	hideoutMiniAppURL string
+	deepSeekAPIKey    string
+	deepSeekBaseURL   string
+	deepSeekModel     string
+	reasoningEffort   string
+	systemPrompt      string
+	geminiAPIKey      string
+	geminiBaseURL     string
+	geminiModel       string
 }
 
 // loadConfig reads the environment on every request so that a misconfigured
 // deploy fails with a clear log line instead of an obscure API error.
 func loadConfig() (config, error) {
 	cfg := config{
-		telegramToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
-		telegramAPIBase: envOrDefault("TELEGRAM_API_BASE", defaultTelegramAPIBase),
-		webhookSecret:   os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
-		deepSeekAPIKey:  os.Getenv("DEEPSEEK_API_KEY"),
-		deepSeekBaseURL: envOrDefault("DEEPSEEK_BASE_URL", defaultDeepSeekBaseURL),
-		deepSeekModel:   envOrDefault("DEEPSEEK_MODEL", defaultDeepSeekModel),
-		reasoningEffort: envOrDefault("DEEPSEEK_REASONING_EFFORT", defaultReasoningEffort),
-		systemPrompt:    envOrDefault("SYSTEM_PROMPT", defaultSystemPrompt),
-		geminiAPIKey:    os.Getenv("GEMINI_API_KEY"),
-		geminiBaseURL:   envOrDefault("GEMINI_BASE_URL", defaultGeminiBaseURL),
-		geminiModel:     envOrDefault("GEMINI_MODEL", defaultGeminiModel),
+		telegramToken:     os.Getenv("TELEGRAM_BOT_TOKEN"),
+		telegramAPIBase:   envOrDefault("TELEGRAM_API_BASE", defaultTelegramAPIBase),
+		webhookSecret:     os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
+		hideoutMiniAppURL: strings.TrimSpace(os.Getenv("HIDEOUT_MINI_APP_URL")),
+		deepSeekAPIKey:    os.Getenv("DEEPSEEK_API_KEY"),
+		deepSeekBaseURL:   envOrDefault("DEEPSEEK_BASE_URL", defaultDeepSeekBaseURL),
+		deepSeekModel:     envOrDefault("DEEPSEEK_MODEL", defaultDeepSeekModel),
+		reasoningEffort:   envOrDefault("DEEPSEEK_REASONING_EFFORT", defaultReasoningEffort),
+		systemPrompt:      envOrDefault("SYSTEM_PROMPT", defaultSystemPrompt),
+		geminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
+		geminiBaseURL:     envOrDefault("GEMINI_BASE_URL", defaultGeminiBaseURL),
+		geminiModel:       envOrDefault("GEMINI_MODEL", defaultGeminiModel),
 	}
 
 	var missing []string

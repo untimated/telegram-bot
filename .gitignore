@@ -1,2 +1,3 @@
 # Real credentials for local runs; .env.example is the committed checklist.
 .env
+.gocache/

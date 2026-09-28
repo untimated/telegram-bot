@@ -34,7 +34,8 @@ const (
 
 const helpText = "Hi! I'm a DeepSeek-powered assistant. Send me a message and I'll answer.\n" +
 	"In group chats, mention me or reply to one of my messages to get a reply.\n" +
-	"Use /digest for today's weather, USD/IDR rate, and top news."
+	"Use /digest for today's weather, USD/IDR rate, and top news.\n" +
+	"Use /hideout to open the group's Hideout."
 
 // httpClient is shared by both upstream clients so connections are reused
 // between the requests one instance handles.
@@ -164,6 +165,12 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	}
 
 	telegram := cfg.telegram()
+	if isHideoutCommand(ctx, telegram, msg.Text) {
+		if cfg.hideoutMiniAppURL == "" {
+			return telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, "Hideout is not configured yet.")
+		}
+		return telegram.sendHideoutLink(ctx, msg.Chat.ID, msg.MessageThreadID, cfg.hideoutMiniAppURL)
+	}
 	if isDigestCommand(ctx, telegram, msg.Text) {
 		stopTyping := telegram.keepTyping(ctx, msg.Chat.ID, msg.MessageThreadID, typingRefreshInterval)
 		defer stopTyping()
@@ -252,16 +259,24 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 // isDigestCommand accepts /digest in a group without a mention, while a
 // command addressed to another bot remains that bot's business.
 func isDigestCommand(ctx context.Context, telegram *telegramClient, text string) bool {
+	return isAddressedCommand(ctx, telegram, text, "/digest")
+}
+
+func isHideoutCommand(ctx context.Context, telegram *telegramClient, text string) bool {
+	return isAddressedCommand(ctx, telegram, text, "/hideout")
+}
+
+func isAddressedCommand(ctx context.Context, telegram *telegramClient, text, wanted string) bool {
 	fields := strings.Fields(text)
 	if len(fields) == 0 {
 		return false
 	}
 	command := fields[0]
-	if strings.EqualFold(command, "/digest") {
+	if strings.EqualFold(command, wanted) {
 		return true
 	}
 	parts := strings.SplitN(command, "@", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "/digest") || parts[1] == "" {
+	if len(parts) != 2 || !strings.EqualFold(parts[0], wanted) || parts[1] == "" {
 		return false
 	}
 	username, err := telegram.username(ctx)

@@ -88,6 +88,16 @@ type sendMessageRequest struct {
 	MessageThreadID int64  `json:"message_thread_id,omitempty"`
 	Text            string `json:"text"`
 	ParseMode       string `json:"parse_mode,omitempty"`
+	ReplyMarkup     any    `json:"reply_markup,omitempty"`
+}
+
+func (c *telegramClient) sendHideoutLink(ctx context.Context, chatID, threadID int64, url string) error {
+	return c.call(ctx, "sendMessage", sendMessageRequest{
+		ChatID:          chatID,
+		MessageThreadID: threadID,
+		Text:            "Enter the Hideout:",
+		ReplyMarkup:     map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Enter Hideout", "url": url}}}},
+	}, nil)
 }
 
 // send delivers an answer as Telegram HTML, split into as many messages as the

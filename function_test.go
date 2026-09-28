@@ -40,9 +40,10 @@ type fakeUpstream struct {
 }
 
 type sentMessage struct {
-	ChatID    int64
-	Text      string
-	ParseMode string
+	ChatID      int64
+	Text        string
+	ParseMode   string
+	ReplyMarkup map[string]any
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -110,6 +111,7 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		sent.Text, _ = body["text"].(string)
 		sent.ParseMode, _ = body["parse_mode"].(string)
+		sent.ReplyMarkup, _ = body["reply_markup"].(map[string]any)
 		f.sent = append(f.sent, sent)
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"message_id": 1}})
 
@@ -226,6 +228,7 @@ func setupBot(t *testing.T, fake *fakeUpstream) {
 	t.Setenv("TELEGRAM_API_BASE", fake.URL)
 	t.Setenv("TELEGRAM_WEBHOOK_SECRET", "")
 	t.Setenv("ALLOWED_CHAT_IDS", "")
+	t.Setenv("HIDEOUT_MINI_APP_URL", "")
 	t.Setenv("DEEPSEEK_API_KEY", "test-key")
 	t.Setenv("DEEPSEEK_BASE_URL", fake.URL)
 	t.Setenv("DEEPSEEK_MODEL", "")

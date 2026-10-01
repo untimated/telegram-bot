@@ -94,6 +94,10 @@ func init() {
 // TelegramHook receives Telegram's webhook calls and answers the messages in
 // them with DeepSeek.
 func TelegramHook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/hideout/entered" {
+		hideoutEntered(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

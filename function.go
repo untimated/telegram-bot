@@ -54,6 +54,7 @@ type update struct {
 type message struct {
 	MessageID       int64       `json:"message_id"`
 	MessageThreadID int64       `json:"message_thread_id"`
+	IsTopicMessage  bool        `json:"is_topic_message"`
 	From            *user       `json:"from"`
 	Chat            chat        `json:"chat"`
 	Text            string      `json:"text"`
@@ -145,6 +146,11 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 	}
 	if msg.From != nil && msg.From.IsBot {
 		return nil
+	}
+	// Outside forum topics Telegram still sets message_thread_id on replies, but
+	// sendChatAction rejects it there, so the typing indicator never showed.
+	if !msg.IsTopicMessage {
+		msg.MessageThreadID = 0
 	}
 	text := strings.TrimSpace(msg.Text)
 	if len(msg.Photo) > 0 {
@@ -238,10 +244,20 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		}
 	}
 
-	answer, err := cfg.chatModel().complete(ctx, []chatMessage{
+	conversation := []chatMessage{
 		{Role: "system", Content: cfg.systemPrompt},
 		{Role: "user", Content: userContent},
-	})
+	}
+	var answer string
+	var images []generatedImage
+	var err error
+	if gemini, ok := cfg.chatModel().(*geminiClient); ok {
+		var reply geminiReply
+		reply, err = gemini.completeReply(ctx, conversation)
+		answer, images = reply.text, reply.images
+	} else {
+		answer, err = cfg.chatModel().complete(ctx, conversation)
+	}
 	stopTyping()
 	if err != nil {
 		log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
@@ -250,6 +266,16 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		defer cancel()
 		return telegram.send(noticeCtx, msg.Chat.ID, msg.MessageThreadID,
 			"Sorry, I couldn't reach the model just now. Please try again in a moment.")
+	}
+	for _, image := range images {
+		if err := telegram.sendPhoto(ctx, msg.Chat.ID, msg.MessageThreadID, image.mime, image.data); err != nil {
+			log.Printf("telegrambot: update %d: %v", incoming.UpdateID, err)
+			answer = "Sorry, I made the image but couldn't send it. Please try again."
+			break
+		}
+	}
+	if answer == "" {
+		return nil
 	}
 	if err := telegram.send(ctx, msg.Chat.ID, msg.MessageThreadID, answer); err != nil {
 		return err

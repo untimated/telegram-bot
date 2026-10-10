@@ -7,7 +7,7 @@ import (
 )
 
 func groupHistoryUpdate(id, chatID, threadID int64, username, text string) string {
-	return fmt.Sprintf(`{"update_id":%d,"message":{"message_id":%d,"message_thread_id":%d,"text":%q,`+
+	return fmt.Sprintf(`{"update_id":%d,"message":{"message_id":%d,"message_thread_id":%d,"is_topic_message":true,"text":%q,`+
 		`"chat":{"id":%d,"type":"supergroup"},"from":{"is_bot":false,"username":%q}}}`,
 		id, id, threadID, text, chatID, username)
 }

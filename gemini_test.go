@@ -55,3 +55,34 @@ func TestLoadConfigGeminiProviderNeedsOnlyGeminiKey(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGeminiClientRunsImageToolCall(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		json.NewDecoder(r.Body).Decode(&req)
+		requests = append(requests, req)
+		switch {
+		case req["model"] == "img":
+			w.Write([]byte(`{"steps":[{"type":"model_output","content":[{"type":"image","mime_type":"image/jpeg","data":"QUJD"}]}]}`))
+		case req["previous_interaction_id"] == nil:
+			w.Write([]byte(`{"id":"i1","steps":[{"type":"function_call","id":"c1","name":"generate_image","arguments":{"prompt":"a BYD Seal"}}]}`))
+		default:
+			w.Write([]byte(`{"id":"i2","steps":[{"type":"model_output","content":[{"type":"text","text":"Here you go."}]}]}`))
+		}
+	}))
+	defer server.Close()
+
+	client := &geminiClient{apiKey: "k", baseURL: server.URL, model: "m", imageModel: "img", images: true, http: server.Client()}
+	reply, err := client.completeReply(context.Background(), []chatMessage{{Role: "user", Content: "draw a BYD Seal"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply.text != "Here you go." || len(reply.images) != 1 || string(reply.images[0].data) != "ABC" {
+		t.Fatalf("reply = %+v", reply)
+	}
+	last := requests[len(requests)-1]
+	if last["previous_interaction_id"] != "i1" {
+		t.Errorf("follow-up request = %v", last)
+	}
+}

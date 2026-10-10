@@ -53,6 +53,7 @@ type config struct {
 	geminiAPIKey      string
 	geminiBaseURL     string
 	geminiModel       string
+	geminiImageModel  string
 }
 
 // loadConfig reads the environment on every request so that a misconfigured
@@ -71,6 +72,7 @@ func loadConfig() (config, error) {
 		geminiAPIKey:      os.Getenv("GEMINI_API_KEY"),
 		geminiBaseURL:     envOrDefault("GEMINI_BASE_URL", defaultGeminiBaseURL),
 		geminiModel:       envOrDefault("GEMINI_MODEL", defaultGeminiModel),
+		geminiImageModel:  envOrDefault("GEMINI_IMAGE_MODEL", defaultGeminiImageModel),
 	}
 
 	cfg.provider = strings.ToLower(envOrDefault("MODEL_PROVIDER", providerDeepSeek))
@@ -118,6 +120,9 @@ func (c config) chatModel() chatModel {
 			model:   c.geminiModel,
 			http:    httpClient,
 			search:  true,
+			images:  true,
+
+			imageModel: c.geminiImageModel,
 		}
 	}
 	return c.deepSeek()
@@ -129,6 +134,7 @@ func (c config) offlineModel() chatModel {
 	if c.provider == providerGemini {
 		model := c.chatModel().(*geminiClient)
 		model.search = false
+		model.images = false
 		return model
 	}
 	client := c.deepSeek()

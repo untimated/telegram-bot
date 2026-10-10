@@ -88,12 +88,20 @@ func (c *geminiSearcher) search(ctx context.Context, query string) (string, erro
 }
 
 type geminiInteraction struct {
+	ID string `json:"id"`
 	// OutputText is the flattened answer the SDKs expose; the REST response
 	// carries the same text in steps, so it is only a fallback.
 	OutputText string `json:"output_text"`
 	Steps      []struct {
-		Type    string `json:"type"`
-		Content []struct {
+		Type string `json:"type"`
+		// Set on function_call steps.
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Content   []struct {
+			Type        string `json:"type"`
+			Data        string `json:"data"`
+			MimeType    string `json:"mime_type"`
 			Text        string `json:"text"`
 			Annotations []struct {
 				Type  string `json:"type"`

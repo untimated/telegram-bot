@@ -238,7 +238,7 @@ func handleUpdate(ctx context.Context, cfg config, incoming *update) error {
 		}
 	}
 
-	answer, err := cfg.deepSeek().complete(ctx, []chatMessage{
+	answer, err := cfg.chatModel().complete(ctx, []chatMessage{
 		{Role: "system", Content: cfg.systemPrompt},
 		{Role: "user", Content: userContent},
 	})

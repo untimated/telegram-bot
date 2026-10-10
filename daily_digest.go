@@ -79,9 +79,7 @@ func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
 	}
 	prompt := fmt.Sprintf(`Write a compact Bahasa Indonesia weather section for a friends' Telegram digest. The date in Jakarta is %s. Start with "🌦 CUACA". Give one short line for each city with condition, high/low temperature, and maximum rain probability, then one practical activity suggestion. Use only the supplied forecast values; these are daily values, so do not guess rain timing. Do not invent warnings or air-quality readings. Output only the weather section. Forecast JSON: %s`, forecasts[0].Date, weatherJSON)
 
-	deepSeek := cfg.deepSeek()
-	deepSeek.search = nil
-	weatherText, err := deepSeek.complete(ctx, []chatMessage{
+	weatherText, err := cfg.offlineModel().complete(ctx, []chatMessage{
 		{Role: "system", Content: "You write concise, practical weather summaries from supplied data only."},
 		{Role: "user", Content: prompt},
 	})
@@ -124,9 +122,7 @@ func summarizeExchangeWeek(ctx context.Context, cfg config, rates []exchangeRate
 	}
 	change := (rates[len(rates)-1].Rate/rates[0].Rate - 1) * 100
 	prompt := fmt.Sprintf(`In one short Bahasa Indonesia sentence, summarize the observed USD/IDR movement across these dated Bank Indonesia rates. The first-to-last change is %+.2f%%. A rising USD/IDR means the rupiah weakened. Mention the direction and any visible fluctuation, but do not infer causes, add outside events, or predict future rates. Output only the sentence. Rates JSON: %s`, change, ratesJSON)
-	deepSeek := cfg.deepSeek()
-	deepSeek.search = nil
-	summary, err := deepSeek.complete(ctx, []chatMessage{
+	summary, err := cfg.offlineModel().complete(ctx, []chatMessage{
 		{Role: "system", Content: "Summarize only the supplied exchange-rate history. Do not speculate about causes or future prices."},
 		{Role: "user", Content: prompt},
 	})

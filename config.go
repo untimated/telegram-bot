@@ -1,6 +1,7 @@
 package telegrambot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -27,7 +28,18 @@ const defaultSystemPrompt = "You are a helpful assistant in a Telegram chat. " +
 // and a chat reply rarely needs them.
 var reasoningEfforts = map[string]bool{"none": true, "low": true, "high": true, "max": true}
 
+const (
+	providerDeepSeek = "deepseek"
+	providerGemini   = "gemini"
+)
+
+// chatModel produces the final answer for a conversation.
+type chatModel interface {
+	complete(ctx context.Context, messages []chatMessage) (string, error)
+}
+
 type config struct {
+	provider          string
 	telegramToken     string
 	telegramAPIBase   string
 	webhookSecret     string
@@ -61,12 +73,20 @@ func loadConfig() (config, error) {
 		geminiModel:       envOrDefault("GEMINI_MODEL", defaultGeminiModel),
 	}
 
+	cfg.provider = strings.ToLower(envOrDefault("MODEL_PROVIDER", providerDeepSeek))
+	if cfg.provider != providerDeepSeek && cfg.provider != providerGemini {
+		return config{}, fmt.Errorf("MODEL_PROVIDER must be %q or %q (got %q)", providerDeepSeek, providerGemini, cfg.provider)
+	}
+
 	var missing []string
 	if cfg.telegramToken == "" {
 		missing = append(missing, "TELEGRAM_BOT_TOKEN")
 	}
-	if cfg.deepSeekAPIKey == "" {
+	if cfg.provider == providerDeepSeek && cfg.deepSeekAPIKey == "" {
 		missing = append(missing, "DEEPSEEK_API_KEY")
+	}
+	if cfg.provider == providerGemini && cfg.geminiAPIKey == "" {
+		missing = append(missing, "GEMINI_API_KEY")
 	}
 	if len(missing) > 0 {
 		return config{}, fmt.Errorf("missing required environment variable(s): %s", strings.Join(missing, ", "))
@@ -85,6 +105,35 @@ func loadConfig() (config, error) {
 
 func (c config) telegram() *telegramClient {
 	return &telegramClient{token: c.telegramToken, apiBase: c.telegramAPIBase, http: httpClient}
+}
+
+// chatModel returns the configured main model. With Gemini it answers directly
+// using Gemini's built-in Google Search; with DeepSeek, search goes through a
+// web_search tool backed by Gemini.
+func (c config) chatModel() chatModel {
+	if c.provider == providerGemini {
+		return &geminiClient{
+			apiKey:  c.geminiAPIKey,
+			baseURL: c.geminiBaseURL,
+			model:   c.geminiModel,
+			http:    httpClient,
+			search:  true,
+		}
+	}
+	return c.deepSeek()
+}
+
+// offlineModel is the configured model with search switched off, for prompts
+// that must be answered from the supplied data only.
+func (c config) offlineModel() chatModel {
+	if c.provider == providerGemini {
+		model := c.chatModel().(*geminiClient)
+		model.search = false
+		return model
+	}
+	client := c.deepSeek()
+	client.search = nil
+	return client
 }
 
 func (c config) deepSeek() *deepSeekClient {

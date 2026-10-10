@@ -29,7 +29,7 @@ var (
 // the tag set Telegram accepts. Everything else is HTML-escaped first, so model
 // output can never inject markup of its own.
 func markdownToHTML(markdown string) string {
-	escaped := htmlEscaper.Replace(markdown)
+	escaped := htmlEscaper.Replace(latexSymbols.Replace(markdown))
 	var out strings.Builder
 
 	for i := 0; i < len(escaped); {
@@ -310,3 +310,11 @@ func tagInfo(tag string) (name string, closing, selfClosing bool) {
 	}
 	return strings.ToLower(inner), closing, selfClosing
 }
+
+// latexSymbols turns the inline math Gemini sometimes emits for arrows and
+// similar symbols into plain Unicode, since Telegram cannot render LaTeX.
+var latexSymbols = strings.NewReplacer(
+	`$\rightarrow$`, "→", `$\to$`, "→", `$\leftarrow$`, "←", `$\leftrightarrow$`, "↔",
+	`$\times$`, "×", `$\approx$`, "≈", `$\geq$`, "≥", `$\leq$`, "≤", `$\neq$`, "≠",
+	`$\degree$`, "°", `$^\circ$`, "°",
+)

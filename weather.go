@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -139,7 +140,12 @@ func (e weatherHTTPError) Error() string {
 
 func isTemporaryWeatherError(err error) bool {
 	var httpErr weatherHTTPError
-	return errors.As(err, &httpErr) && (httpErr.status == http.StatusTooManyRequests || httpErr.status >= 500)
+	if errors.As(err, &httpErr) {
+		return httpErr.status == http.StatusTooManyRequests || httpErr.status >= 500
+	}
+	// Network timeouts (e.g. "TLS handshake timeout") are usually brief blips too.
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func weatherCondition(code int) string {

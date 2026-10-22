@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,9 +130,10 @@ func TestScheduledDigestSurvivesMissingFinanceAndNews(t *testing.T) {
 	}
 }
 
-func TestScheduledDigestReportsPersistentWeatherFailure(t *testing.T) {
+func TestScheduledDigestSurvivesPersistentWeatherFailure(t *testing.T) {
 	fake := newFakeUpstream(t)
 	setupBot(t, fake)
+	setupDigestSources(t, false)
 	requests := 0
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -147,14 +149,39 @@ func TestScheduledDigestReportsPersistentWeatherFailure(t *testing.T) {
 	if err := RunDailyWeatherDigest(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 3 {
-		t.Errorf("weather requests = %d, want 3", requests)
+	if requests != 6 {
+		t.Errorf("weather requests = %d, want 3 per city", requests)
 	}
 	sent := fake.sentMessages()
-	if len(sent) != 1 || sent[0].ChatID != -100 ||
-		!strings.Contains(sent[0].Text, "Today's Digest is not available") ||
-		!strings.Contains(sent[0].Text, "Jakarta forecast: HTTP 503") {
-		t.Errorf("sent = %v, want one failure notice with the cause", sent)
+	if len(sent) != 1 || sent[0].ChatID != -100 {
+		t.Fatalf("sent = %v, want one digest", sent)
+	}
+	for _, want := range []string{"Ringkasan pagi", "Cuaca belum tersedia", "16.512", "Headline one"} {
+		if !strings.Contains(sent[0].Text, want) {
+			t.Errorf("digest is missing %q: %s", want, sent[0].Text)
+		}
+	}
+}
+
+func TestDigestShowsPlainWeatherWhenModelFails(t *testing.T) {
+	fake := newFakeUpstream(t)
+	fake.deepSeekCode = http.StatusBadRequest
+	setupBot(t, fake)
+	setupDigestSources(t, true)
+	t.Setenv("DAILY_CHAT_ID", "-100")
+	t.Setenv("ALLOWED_CHAT_IDS", "-100")
+
+	if err := RunDailyWeatherDigest(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	sent := fake.sentMessages()
+	if len(sent) != 1 {
+		t.Fatalf("sent = %v, want one digest", sent)
+	}
+	for _, want := range []string{"Jakarta: overcast, 25–32°C, peluang hujan 70%", "Tangerang: overcast", "Open-Meteo"} {
+		if !strings.Contains(sent[0].Text, want) {
+			t.Errorf("digest is missing %q: %s", want, sent[0].Text)
+		}
 	}
 }
 
@@ -176,5 +203,21 @@ func TestWeatherForecastRetriesTemporaryFailure(t *testing.T) {
 	forecast, err := fetchWeatherForecast(context.Background(), jakartaAndTangerang[0])
 	if err != nil || forecast.Date != "2026-09-27" || requests != 2 {
 		t.Fatalf("forecast = %+v, err = %v, requests = %d", forecast, err, requests)
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "net/http: TLS handshake timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+func TestWeatherNetworkTimeoutIsTemporary(t *testing.T) {
+	err := fmt.Errorf("fetch Jakarta forecast: %w", timeoutError{})
+	if !isTemporaryWeatherError(err) {
+		t.Errorf("isTemporaryWeatherError(%v) = false, want true", err)
+	}
+	if isTemporaryWeatherError(errors.New("decode forecast: bad json")) {
+		t.Error("a decode error should not be retried")
 	}
 }

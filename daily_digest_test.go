@@ -2,6 +2,7 @@ package telegrambot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -176,5 +177,21 @@ func TestWeatherForecastRetriesTemporaryFailure(t *testing.T) {
 	forecast, err := fetchWeatherForecast(context.Background(), jakartaAndTangerang[0])
 	if err != nil || forecast.Date != "2026-09-27" || requests != 2 {
 		t.Fatalf("forecast = %+v, err = %v, requests = %d", forecast, err, requests)
+	}
+}
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "net/http: TLS handshake timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+
+func TestWeatherNetworkTimeoutIsTemporary(t *testing.T) {
+	err := fmt.Errorf("fetch Jakarta forecast: %w", timeoutError{})
+	if !isTemporaryWeatherError(err) {
+		t.Errorf("isTemporaryWeatherError(%v) = false, want true", err)
+	}
+	if isTemporaryWeatherError(errors.New("decode forecast: bad json")) {
+		t.Error("a decode error should not be retried")
 	}
 }

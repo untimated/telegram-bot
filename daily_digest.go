@@ -61,32 +61,11 @@ func sendDailyDigest(ctx context.Context, cfg config, chatID, threadID int64) er
 }
 
 func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
-	forecasts := make([]weatherForecast, 0, len(jakartaAndTangerang))
-	for _, location := range jakartaAndTangerang {
-		forecast, err := fetchWeatherForecast(ctx, location)
-		if err != nil {
-			return "", err
-		}
-		forecasts = append(forecasts, forecast)
+	weatherText, date := buildWeatherSection(ctx, cfg)
+	if date == "" {
+		date = time.Now().In(time.FixedZone("WIB", 7*60*60)).Format("2006-01-02")
 	}
-	if forecasts[0].Date != forecasts[1].Date {
-		return "", fmt.Errorf("weather providers returned different local dates: %s and %s", forecasts[0].Date, forecasts[1].Date)
-	}
-
-	weatherJSON, err := json.Marshal(forecasts)
-	if err != nil {
-		return "", fmt.Errorf("encode weather forecast: %w", err)
-	}
-	prompt := fmt.Sprintf(`Write a compact Bahasa Indonesia weather section for a friends' Telegram digest. The date in Jakarta is %s. Start with "🌦 CUACA". Give one short line for each city with condition, high/low temperature, and maximum rain probability, then one practical activity suggestion. Use only the supplied forecast values; these are daily values, so do not guess rain timing. Do not invent warnings or air-quality readings. Output only the weather section. Forecast JSON: %s`, forecasts[0].Date, weatherJSON)
-
-	weatherText, err := cfg.offlineModel().complete(ctx, []chatMessage{
-		{Role: "system", Content: "You write concise, practical weather summaries from supplied data only."},
-		{Role: "user", Content: prompt},
-	})
-	if err != nil {
-		return "", fmt.Errorf("write weather digest: %w", err)
-	}
-	sections := []string{weatherText + "\nSumber: [Open-Meteo](https://open-meteo.com/en/docs)"}
+	sections := []string{weatherText}
 	if rate, err := fetchUSDtoIDR(ctx); err != nil {
 		log.Printf("daily digest: exchange rate unavailable: %v", err)
 		sections = append(sections, "💱 *USD/IDR*\nKurs belum tersedia.")
@@ -112,7 +91,63 @@ func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
 	} else {
 		sections = append(sections, formatHeadlines(headlines))
 	}
-	return "☀️ *Ringkasan pagi · " + forecasts[0].Date + "*\n\n" + strings.Join(sections, "\n\n──────────\n\n"), nil
+	return "☀️ *Ringkasan pagi · " + date + "*\n\n" + strings.Join(sections, "\n\n──────────\n\n"), nil
+}
+
+// buildWeatherSection never fails: a city that can't be fetched is marked as
+// unavailable, and if the model call fails the raw numbers are shown instead.
+// It returns the forecast date, or "" when no city could be fetched.
+func buildWeatherSection(ctx context.Context, cfg config) (string, string) {
+	var forecasts []weatherForecast
+	var missing []string
+	for _, location := range jakartaAndTangerang {
+		forecast, err := fetchWeatherForecast(ctx, location)
+		if err != nil {
+			log.Printf("daily digest: %s weather unavailable: %v", location.name, err)
+			missing = append(missing, location.name)
+			continue
+		}
+		forecasts = append(forecasts, forecast)
+	}
+	if len(forecasts) == 0 {
+		return "🌦 *CUACA*\nCuaca belum tersedia.", ""
+	}
+
+	weatherText, err := summarizeWeather(ctx, cfg, forecasts, missing)
+	if err != nil {
+		log.Printf("daily digest: weather summary unavailable: %v", err)
+		lines := []string{"🌦 *CUACA*"}
+		for _, f := range forecasts {
+			lines = append(lines, fmt.Sprintf("%s: %s, %.0f–%.0f°C, peluang hujan %.0f%%",
+				f.Location, f.Condition, f.TemperatureMinC, f.TemperatureMaxC, f.PrecipitationProbability))
+		}
+		for _, name := range missing {
+			lines = append(lines, name+": belum tersedia")
+		}
+		weatherText = strings.Join(lines, "\n")
+	}
+	return weatherText + "\nSumber: [Open-Meteo](https://open-meteo.com/en/docs)", forecasts[0].Date
+}
+
+func summarizeWeather(ctx context.Context, cfg config, forecasts []weatherForecast, missing []string) (string, error) {
+	weatherJSON, err := json.Marshal(forecasts)
+	if err != nil {
+		return "", fmt.Errorf("encode weather forecast: %w", err)
+	}
+	missingNote := ""
+	if len(missing) > 0 {
+		missingNote = fmt.Sprintf(" The forecast for %s could not be fetched today: give it one line saying the forecast is not available, and do not guess its weather.", strings.Join(missing, " and "))
+	}
+	prompt := fmt.Sprintf(`Write a compact Bahasa Indonesia weather section for a friends' Telegram digest. The date in Jakarta is %s. Start with "🌦 CUACA". Give one short line for each city with condition, high/low temperature, and maximum rain probability, then one practical activity suggestion. Use only the supplied forecast values; these are daily values, so do not guess rain timing. Do not invent warnings or air-quality readings.%s Output only the weather section. Forecast JSON: %s`, forecasts[0].Date, missingNote, weatherJSON)
+
+	weatherText, err := cfg.offlineModel().complete(ctx, []chatMessage{
+		{Role: "system", Content: "You write concise, practical weather summaries from supplied data only."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		return "", fmt.Errorf("write weather digest: %w", err)
+	}
+	return weatherText, nil
 }
 
 func summarizeExchangeWeek(ctx context.Context, cfg config, rates []exchangeRate) (string, error) {

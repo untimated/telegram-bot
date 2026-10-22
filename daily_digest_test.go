@@ -34,24 +34,24 @@ func setupDigestSources(t *testing.T, failExtras bool) {
 				return
 			}
 			fmt.Fprint(w, `[{"date":"2026-09-25","base":"USD","quote":"IDR","rate":16512.5},{"date":"2026-09-22","base":"USD","quote":"IDR","rate":16400}]`)
-		case "/rss/top-news.xml":
+		case "/rss":
 			if failExtras {
 				http.Error(w, "unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			fmt.Fprint(w, `<rss><channel><item><title>Headline one</title><link>https://www.antaranews.com/one</link></item><item><title>Headline two</title><link>https://www.antaranews.com/two</link></item><item><title>Headline three</title><link>https://www.antaranews.com/three</link></item></channel></rss>`)
+			fmt.Fprint(w, `<rss><channel><item><title>Headline one - Kompas.com</title><link>https://news.google.com/rss/articles/one</link><source url="https://www.kompas.com">Kompas.com</source></item><item><title>Headline two - ANTARA News</title><link>https://news.google.com/rss/articles/two</link><source url="https://www.antaranews.com">ANTARA News</source></item><item><title>Headline three</title><link>https://news.google.com/rss/articles/three</link></item></channel></rss>`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(source.Close)
-	oldWeather, oldRate, oldHistory, oldNews := openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, antaraTopNewsURL
+	oldWeather, oldRate, oldHistory, oldNews := openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, googleNewsURL
 	openMeteoBaseURL = source.URL
 	frankfurterRateURL = source.URL + "/v2/rate/USD/IDR?providers=BI"
 	frankfurterHistoryURL = source.URL + "/v2/rates"
-	antaraTopNewsURL = source.URL + "/rss/top-news.xml"
+	googleNewsURL = source.URL + "/rss"
 	t.Cleanup(func() {
-		openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, antaraTopNewsURL = oldWeather, oldRate, oldHistory, oldNews
+		openMeteoBaseURL, frankfurterRateURL, frankfurterHistoryURL, googleNewsURL = oldWeather, oldRate, oldHistory, oldNews
 	})
 }
 
@@ -74,7 +74,7 @@ func TestGroupDigestCommandUsesAllThreeSources(t *testing.T) {
 	if len(sent) != 1 || sent[0].ChatID != -100 {
 		t.Fatalf("sent = %v, want one group digest", sent)
 	}
-	for _, want := range []string{"Ringkasan pagi", "Jakarta dan Tangerang", "16.512", "2026-09-25", "2026-09-22–2026-09-25", "+0.69%", "sedikit fluktuasi", "Headline one", "Headline two", "Headline three", "──────────"} {
+	for _, want := range []string{"Ringkasan pagi", "Jakarta dan Tangerang", "16.512", "2026-09-25", "2026-09-22–2026-09-25", "+0.69%", "sedikit fluktuasi", `1. Headline one — Kompas.com · <a href="https://news.google.com/rss/articles/one">Baca</a>`, "Headline two — ANTARA News", "3. Headline three · <a", "──────────"} {
 		if !strings.Contains(sent[0].Text, want) {
 			t.Errorf("digest %q is missing %q", sent[0].Text, want)
 		}

@@ -108,7 +108,7 @@ func buildDailyDigest(ctx context.Context, cfg config) (string, error) {
 	}
 	if headlines, err := fetchTopHeadlines(ctx); err != nil {
 		log.Printf("daily digest: headlines unavailable: %v", err)
-		sections = append(sections, "📰 *Berita utama ANTARA*\nBelum tersedia.")
+		sections = append(sections, "📰 *Berita utama*\nBelum tersedia.")
 	} else {
 		sections = append(sections, formatHeadlines(headlines))
 	}

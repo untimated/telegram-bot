@@ -66,7 +66,7 @@ var webSearchTool = toolDefinition{
 	Type: "function",
 	Function: toolFunction{
 		Name: webSearchToolName,
-		Description: "Search Google for anything current: news, sports results, prices, " +
+		Description: "Search the web for anything current: news, sports results, prices, " +
 			"weather, releases, or facts after your knowledge cutoff. Returns an answer with its sources.",
 		Parameters: map[string]any{
 			"type": "object",

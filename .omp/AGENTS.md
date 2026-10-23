@@ -1,6 +1,6 @@
 # TelegramBot (D:/Projects/CloudRun/TelegramBot)
 
-Go Cloud Function (gen 2) that Telegram calls by webhook. It answers messages with DeepSeek, and offers the model a `web_search` tool backed by Gemini + Google Search grounding when `GEMINI_API_KEY` is set.
+Go Cloud Function (gen 2) that Telegram calls by webhook. It answers messages with DeepSeek, and offers the model a `web_search` tool backed by DeepSeek's Search API (`/v1/tools/search`, same key).
 
 Full history, gotchas, and open items: **`session.md` in the repository root — read it before changing behaviour.**
 

@@ -112,7 +112,7 @@ func (c config) telegram() *telegramClient {
 
 // chatModel returns the configured main model. With Gemini it answers directly
 // using Gemini's built-in Google Search; with DeepSeek, search goes through a
-// web_search tool backed by Gemini.
+// web_search tool backed by DeepSeek's Search API.
 func (c config) chatModel() chatModel {
 	if c.provider == providerGemini {
 		return &geminiClient{
@@ -151,15 +151,10 @@ func (c config) deepSeek() *deepSeekClient {
 		reasoningEffort: c.reasoningEffort,
 		http:            httpClient,
 	}
-	// Without a Gemini key the bot simply answers from the model's own
-	// knowledge: no search tool is offered, so nothing changes.
-	if c.geminiAPIKey != "" {
-		client.search = &geminiSearcher{
-			apiKey:  c.geminiAPIKey,
-			baseURL: c.geminiBaseURL,
-			model:   c.geminiModel,
-			http:    httpClient,
-		}
+	client.search = &deepSeekSearcher{
+		apiKey:  c.deepSeekAPIKey,
+		baseURL: c.deepSeekBaseURL,
+		http:    httpClient,
 	}
 	return client
 }

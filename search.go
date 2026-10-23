@@ -21,37 +21,50 @@ type searcher interface {
 const (
 	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
 	defaultGeminiModel   = "gemini-3.8-flash"
-	// geminiSearchPath is the Interactions API. Turning on the built-in Google
-	// Search tool lets the model run the queries and cite the pages itself.
+	// geminiSearchPath is the Interactions API, used when Gemini is the main
+	// model and runs Google Search itself.
 	geminiSearchPath = "/v1beta/interactions"
+	// deepSeekSearchPath is DeepSeek's own web search API.
+	deepSeekSearchPath = "/v1/tools/search"
+	searchResultCount  = 5
+	maxSearchQueryLen  = 128
 )
 
-type geminiSearcher struct {
+// deepSeekSearcher backs the web_search tool with DeepSeek's Search API, so
+// the DeepSeek key is the only one needed.
+type deepSeekSearcher struct {
 	apiKey  string
 	baseURL string
-	model   string
 	http    *http.Client
 }
 
-// search asks Gemini with Google Search grounding enabled, and returns its
-// grounded answer together with the pages it cited.
-func (c *geminiSearcher) search(ctx context.Context, query string) (string, error) {
-	payload, err := json.Marshal(map[string]any{
-		"model": c.model,
-		"input": query,
-		"tools": []any{map[string]any{"type": "google_search"}},
-	})
+type deepSeekSearchResult struct {
+	Title    string `json:"title"`
+	URL      string `json:"url"`
+	Summary  string `json:"summary"`
+	SiteName string `json:"site_name"`
+	Date     string `json:"date"`
+}
+
+// search returns the top results, using the summaries DeepSeek writes for
+// models to read.
+func (c *deepSeekSearcher) search(ctx context.Context, query string) (string, error) {
+	// The API rejects queries over 128 characters.
+	if runes := []rune(query); len(runes) > maxSearchQueryLen {
+		query = string(runes[:maxSearchQueryLen])
+	}
+	payload, err := json.Marshal(map[string]any{"query": query, "count": searchResultCount})
 	if err != nil {
 		return "", fmt.Errorf("web search: encode request: %w", err)
 	}
 
-	url := strings.TrimRight(c.baseURL, "/") + geminiSearchPath
+	url := strings.TrimRight(c.baseURL, "/") + deepSeekSearchPath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("web search: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("x-goog-api-key", c.apiKey)
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 
 	response, err := c.http.Do(request)
 	if err != nil {
@@ -64,27 +77,37 @@ func (c *geminiSearcher) search(ctx context.Context, query string) (string, erro
 		return "", fmt.Errorf("web search: read response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		var envelope struct {
-			Error struct {
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
+		var envelope errorEnvelope
 		if json.Unmarshal(body, &envelope) == nil && envelope.Error.Message != "" {
-			return "", fmt.Errorf("web search: %d %s: %s", response.StatusCode, envelope.Error.Status, envelope.Error.Message)
+			return "", fmt.Errorf("web search: %d %s: %s", response.StatusCode, envelope.Error.Type, envelope.Error.Message)
 		}
 		return "", fmt.Errorf("web search: %d: %s", response.StatusCode, bodySnippet(body))
 	}
 
-	var interaction geminiInteraction
-	if err := json.Unmarshal(body, &interaction); err != nil {
+	var decoded struct {
+		Results []deepSeekSearchResult `json:"results"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
 		return "", fmt.Errorf("web search: decode response: %w", err)
 	}
-	answer, sources := interaction.findings()
-	if answer == "" {
-		return "", errors.New("web search: Gemini returned no grounded answer")
+	if len(decoded.Results) == 0 {
+		return "", errors.New("web search: no results")
 	}
-	return formatFindings(query, answer, sources), nil
+	return formatResults(query, decoded.Results), nil
+}
+
+// formatResults renders search results as the text the chat model reads.
+func formatResults(query string, results []deepSeekSearchResult) string {
+	var out strings.Builder
+	fmt.Fprintf(&out, "Web search results for %q:\n", query)
+	for i, result := range results {
+		fmt.Fprintf(&out, "\n%d. %s — %s\n", i+1, result.Title, result.URL)
+		if result.SiteName != "" || result.Date != "" {
+			fmt.Fprintf(&out, "   %s %s\n", result.SiteName, result.Date)
+		}
+		out.WriteString("   " + strings.TrimSpace(result.Summary) + "\n")
+	}
+	return strings.TrimSpace(out.String())
 }
 
 type geminiInteraction struct {
@@ -143,17 +166,4 @@ func (i geminiInteraction) findings() (string, []string) {
 		return text, sources
 	}
 	return strings.TrimSpace(i.OutputText), sources
-}
-
-// formatFindings renders a search result as the text the chat model reads.
-func formatFindings(query, answer string, sources []string) string {
-	var out strings.Builder
-	fmt.Fprintf(&out, "Google Search results for %q:\n\n%s", query, strings.TrimSpace(answer))
-	if len(sources) > 0 {
-		out.WriteString("\n\nSources:\n")
-		for _, source := range sources {
-			out.WriteString("- " + source + "\n")
-		}
-	}
-	return strings.TrimSpace(out.String())
 }

@@ -9,12 +9,6 @@ import (
 	"time"
 )
 
-// enableSearch turns the web_search tool on for one test.
-func enableSearch(t *testing.T) {
-	t.Helper()
-	t.Setenv("GEMINI_API_KEY", "test-gemini-key")
-}
-
 // toolMessages returns the tool results in a request the model is being fed.
 func toolMessages(t *testing.T, request map[string]any) []map[string]any {
 	t.Helper()
@@ -43,7 +37,6 @@ func TestWebSearchRoundTrip(t *testing.T) {
 		textCompletion("Spain won it, per [example](https://example.com/news)."),
 	}
 	setupBot(t, fake)
-	enableSearch(t)
 
 	if code := postUpdate(t, privateUpdate(4242, "who won euro 2024?"), "").Code; code != http.StatusOK {
 		t.Fatalf("webhook status = %d, want %d", code, http.StatusOK)
@@ -64,17 +57,13 @@ func TestWebSearchRoundTrip(t *testing.T) {
 		t.Errorf("tool name = %v, want %v", function["name"], webSearchToolName)
 	}
 
-	// The search ran, with Google Search grounding switched on.
+	// The search ran through DeepSeek's Search API with the model's query.
 	searches := fake.searchRequests()
 	if len(searches) != 1 {
 		t.Fatalf("searches = %d, want 1", len(searches))
 	}
-	if searches[0]["input"] != "who won euro 2024" {
-		t.Errorf("search input = %v, want the model's query", searches[0]["input"])
-	}
-	searchTools, _ := searches[0]["tools"].([]any)
-	if len(searchTools) != 1 || searchTools[0].(map[string]any)["type"] != "google_search" {
-		t.Errorf("search tools = %v, want google_search grounding", searches[0]["tools"])
+	if searches[0]["query"] != "who won euro 2024" {
+		t.Errorf("search query = %v, want the model's query", searches[0]["query"])
 	}
 
 	// The findings and their source were fed back as the tool result.
@@ -87,7 +76,7 @@ func TestWebSearchRoundTrip(t *testing.T) {
 	}
 	content, _ := results[0]["content"].(string)
 	if !strings.Contains(content, "Spain won Euro 2024") {
-		t.Errorf("tool result = %q, want the grounded answer", content)
+		t.Errorf("tool result = %q, want the search summary", content)
 	}
 	if !strings.Contains(content, "https://example.com/news") {
 		t.Errorf("tool result = %q, want the cited source", content)
@@ -103,24 +92,6 @@ func TestWebSearchRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNoSearchToolWithoutAGeminiKey(t *testing.T) {
-	fake := newFakeUpstream(t)
-	setupBot(t, fake)
-
-	postUpdate(t, privateUpdate(4242, "hi"), "")
-
-	requests := fake.deepSeekRequests()
-	if len(requests) != 1 {
-		t.Fatalf("deepseek calls = %d, want 1", len(requests))
-	}
-	if tools, ok := requests[0]["tools"]; ok {
-		t.Errorf("tools = %v, want none when no Gemini key is configured", tools)
-	}
-	if searches := fake.searchRequests(); len(searches) != 0 {
-		t.Errorf("searches = %d, want none", len(searches))
-	}
-}
-
 func TestSearchFailureStillAnswers(t *testing.T) {
 	fake := newFakeUpstream(t)
 	fake.searchCode = http.StatusServiceUnavailable
@@ -129,7 +100,6 @@ func TestSearchFailureStillAnswers(t *testing.T) {
 		textCompletion("I couldn't look that up, but here's what I know."),
 	}
 	setupBot(t, fake)
-	enableSearch(t)
 
 	postUpdate(t, privateUpdate(4242, "any news?"), "")
 
@@ -155,7 +125,6 @@ func TestSearchRoundsAreBounded(t *testing.T) {
 		fake.responses = append(fake.responses, toolCallCompletion("call", webSearchToolName, `{"query":"again"}`))
 	}
 	setupBot(t, fake)
-	enableSearch(t)
 
 	postUpdate(t, privateUpdate(4242, "loop please"), "")
 
@@ -175,7 +144,6 @@ func TestUnknownToolIsReportedToTheModel(t *testing.T) {
 		textCompletion("I can't do that."),
 	}
 	setupBot(t, fake)
-	enableSearch(t)
 
 	postUpdate(t, privateUpdate(4242, "drop the database"), "")
 

@@ -77,14 +77,17 @@ func (f *fakeUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, f.nextCompletion())
 
-	case r.URL.Path == geminiSearchPath:
+	case r.URL.Path == deepSeekSearchPath:
 		f.searchReqs = append(f.searchReqs, body)
 		if f.searchCode != 0 {
 			w.WriteHeader(f.searchCode)
-			writeJSON(w, map[string]any{"error": map[string]any{"message": "grounding unavailable", "status": "UNAVAILABLE"}})
+			writeJSON(w, map[string]any{"error": map[string]any{"message": "search unavailable", "type": "server_error"}})
 			return
 		}
-		writeJSON(w, groundedResponse(f.searchText, "https://example.com/news", "example.com"))
+		writeJSON(w, map[string]any{"results": []any{map[string]any{
+			"title": "Example News", "url": "https://example.com/news", "summary": f.searchText,
+			"snippet": "", "content": "", "rerank_score": 2.0, "authority": 3,
+		}}})
 
 	case strings.HasSuffix(r.URL.Path, "/getMe"):
 		writeJSON(w, map[string]any{"ok": true, "result": map[string]any{"username": "testbot", "is_bot": true}})
@@ -181,27 +184,6 @@ func toolCallCompletion(id, name, arguments string) map[string]any {
 	}
 }
 
-// groundedResponse mirrors a Gemini Interactions response with Google Search
-// grounding: the answer lives in a model_output step, the pages it used in
-// url_citation annotations.
-func groundedResponse(answer, sourceURL, sourceTitle string) map[string]any {
-	return map[string]any{
-		"steps": []any{
-			map[string]any{"type": "google_search_call", "arguments": map[string]any{"queries": []any{"q"}}},
-			map[string]any{
-				"type": "model_output",
-				"content": []any{map[string]any{
-					"type": "text",
-					"text": answer,
-					"annotations": []any{
-						map[string]any{"type": "url_citation", "url": sourceURL, "title": sourceTitle},
-					},
-				}},
-			},
-		},
-	}
-}
-
 func (f *fakeUpstream) sentMessages() []sentMessage {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -234,8 +216,6 @@ func setupBot(t *testing.T, fake *fakeUpstream) {
 	t.Setenv("DEEPSEEK_MODEL", "")
 	t.Setenv("DEEPSEEK_REASONING_EFFORT", "")
 	t.Setenv("SYSTEM_PROMPT", "")
-	// Web search stays off unless a test turns it on, so the other tests
-	// exercise the bot exactly as it behaves without a Gemini key.
 	t.Setenv("GEMINI_API_KEY", "")
 	t.Setenv("GEMINI_BASE_URL", fake.URL)
 	t.Setenv("GEMINI_MODEL", "")
@@ -439,7 +419,7 @@ func TestPrivatePhotoGoesDirectlyToDeepSeek(t *testing.T) {
 		t.Errorf("image part = %v, want inline PNG", imagePart)
 	}
 	if len(fake.searchRequests()) != 0 {
-		t.Errorf("Gemini search requests = %d, want 0", len(fake.searchRequests()))
+		t.Errorf("search requests = %d, want 0", len(fake.searchRequests()))
 	}
 	if len(fake.sentMessages()) != 1 {
 		t.Errorf("Telegram replies = %d, want 1", len(fake.sentMessages()))
